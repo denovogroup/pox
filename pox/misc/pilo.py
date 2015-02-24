@@ -19,12 +19,19 @@ This component will implement PILO (physically in band logically out of band) SD
 
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
+import pox.lib.packet as pkt
 
+from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from twisted.internet.protocol import DatagramProtocol
 from twisted.internet import reactor
 from threading import Thread
+import fcntl, socket, struct
+import traceback
 
 log = core.getLogger()
+
+UDP_IP = "192.168.1.255"
+UDP_PORT = 5005
 
 
 
@@ -36,6 +43,15 @@ class Pilo (object):
   def __init__ (self, connection):
 
     self.connection = connection
+
+    # Creates an open flow rule which should allow our broadcast messages
+    broadcast_msg_flow = of.ofp_flow_mod()
+    broadcast_msg_flow.priority = 101
+    broadcast_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
+    broadcast_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
+    broadcast_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
+    broadcast_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
+    self.connection.send(broadcast_msg_flow)
 
     # This binds our PacketIn event listener
     connection.addListeners(self)
@@ -60,26 +76,17 @@ class Pilo (object):
     self.connection.send(msg)
 
 
-  def act_like_hub (self, packet, packet_in):
+  def broadcast_message(self, packet):
     """
-    Implement hub-like behavior -- send all packets to all ports besides
-    the input port.
+    Broadcast message we've received from ovs
     """
+    log.debug("sending broadcast packet")
+    log.debug(packet)
 
-    # We want to output to all ports -- we do that using the special
-    # OFPP_ALL port as the output port.  (We could have also used
-    # OFPP_FLOOD.)
-    self.resend_packet(packet_in, of.OFPP_ALL)
-
-    # Note that if we didn't get a valid buffer_id, a slightly better
-    # implementation would check that we got the full data before
-    # sending it (len(packet_in.data) should be == packet_in.total_len)).
-
-
-  def act_like_switch (self, packet, packet_in):
-    """
-    Implement switch-like behavior.
-    """
+    sock = socket.socket(socket.AF_INET, # Internet
+                         socket.SOCK_DGRAM) # UDP
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.sendto(packet, (UDP_IP, UDP_PORT))
 
   def _handle_PacketIn (self, event):
     """
@@ -91,21 +98,29 @@ class Pilo (object):
       log.warning("Ignoring incomplete packet")
       return
 
-    packet_in = event.ofp # The actual ofp_packet_in message.
+    eth = packet.find('ethernet')
+    local_mac = getHwAddr('br-int') #TODO: get interface from parameters? or maybe OVS?
 
-    # Comment out the following line and uncomment the one after
-    # when starting the exercise.
-    self.act_like_hub(packet, packet_in)
-    #self.act_like_switch(packet, packet_in)
+    if str(eth.src) == str(local_mac):
+      return
 
+    self.broadcast_message(packet.pack())
 
-class TwistedHandler(DatagramProtocol):
+class BroadcastHandler(DatagramProtocol):
 
-    def datagramReceived(self, data, (host, port)):
-        print "received %r from %s:%d" % (data, host, port)
-        self.transport.write(data, (host, port))
+  def datagramReceived(self, data, (host, port)):
+    log.debug("received %r from %s:%d" % (data, host, port))
+    self.transport.write(data, (host, port))
 
+    broadcast_out = pkt.udp.unpack(data)
 
+    log.debug("broadcast msg src = " + str(broadcast_out.srcport))
+    log.debug(str(broadcast_out))
+
+def getHwAddr(ifname):
+  sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  info = fcntl.ioctl(sock.fileno(), 0x8927,  struct.pack('256s', ifname[:15]))
+  return ':'.join(['%02x' % ord(char) for char in info[18:24]])
 
 def launch ():
   """
@@ -119,21 +134,16 @@ def launch ():
   def run ():
     try:
 
-      UDP_IP = "192.168.1.255"
-      UDP_PORT = 5005
-
-      port_socket = socket.socket(socket.AF_INET, # Internet
-                           socket.SOCK_DGRAM) # UDP
-      port_socket.bind(('', UDP_PORT))
-      port_socket.setblocking(False)
+      sock = socket.socket(socket.AF_INET, # Internet
+          socket.SOCK_DGRAM) # UDP
+      sock.bind(('', UDP_PORT))
+      sock.setblocking(False)
 
       port = reactor.adoptDatagramPort(
-              port_socket.fileno(), socket.AF_INET, TwistedHandler(), maxPacketSize=65507)
+          sock.fileno(), socket.AF_INET, BroadcastHandler(), maxPacketSize=65507)
 
-      port_socket.close()
+      sock.close()
 
-      print "ip: " + UDP_IP
-      print "port: " + str(UDP_PORT)
       log.debug("Listening on %s:%d" % (UDP_IP, UDP_PORT))
 
       reactor.run(installSignalHandlers=0)
