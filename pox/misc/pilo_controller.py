@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-This component will implement PILO (physically in band logically out of band) SDN openflow.
+This component will implement the PILO (physically in band logically out of band) controller part of SDN openflow.
 
 """
 
@@ -25,7 +25,8 @@ from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from twisted.internet.protocol import DatagramProtocol
 from twisted.internet import reactor
 from threading import Thread
-import fcntl, socket, struct
+from lib.util import get_hw_addr
+import socket, struct
 import traceback
 
 log = core.getLogger()
@@ -33,11 +34,12 @@ log = core.getLogger()
 UDP_IP = "192.168.1.255"
 UDP_PORT = 5005
 
+TMP_DST_MAC = "08:00:27:33:0b:f4"
 
 
-class Pilo (object):
+class PiloController (object):
   """
-  A Pilo object is created for each switch that connects.
+  A PiloController object is created for each switch that connects.
   A Connection object for that switch is passed to the __init__ function.
   """
   def __init__ (self, connection):
@@ -50,7 +52,7 @@ class Pilo (object):
     broadcast_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
     broadcast_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
     broadcast_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
-    broadcast_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
+    broadcast_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
     self.connection.send(broadcast_msg_flow)
 
     # This binds our PacketIn event listener
@@ -99,7 +101,7 @@ class Pilo (object):
       return
 
     eth = packet.find('ethernet')
-    local_mac = getHwAddr('br-int') #TODO: get interface from parameters? or maybe OVS?
+    local_mac = get_hw_addr('br-int') #TODO: get interface from parameters? or maybe OVS?
 
     if str(eth.src) == str(local_mac):
       return
@@ -110,26 +112,50 @@ class BroadcastHandler(DatagramProtocol):
 
   def datagramReceived(self, data, (host, port)):
     log.debug("received %r from %s:%d" % (data, host, port))
-    self.transport.write(data, (host, port))
 
-    broadcast_out = pkt.udp.unpack(data)
+    log.debug("broadcast msg len = " + str(len(data)))
+    broadcast_in = pkt.pilo.unpack(data)
 
-    log.debug("broadcast msg src = " + str(broadcast_out.srcport))
-    log.debug(str(broadcast_out))
+    log.debug("broadcast msg src = " + str(broadcast_in.src_address))
+    log.debug(str(broadcast_in))
 
-def getHwAddr(ifname):
-  sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-  info = fcntl.ioctl(sock.fileno(), 0x8927,  struct.pack('256s', ifname[:15]))
-  return ':'.join(['%02x' % ord(char) for char in info[18:24]])
+
+def send_broadcast():
+
+    new_flow = of.ofp_flow_mod()
+    new_flow.priority = 102
+    new_flow.match.dl_type = pkt.ethernet.IP_TYPE
+    new_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
+    new_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
+    new_flow.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
+
+
+    pilo_packet = pkt.pilo()
+    pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr('br-int'))
+    pilo_packet.dst_address  = pkt.packet_utils.mac_string_to_addr(TMP_DST_MAC)
+    pilo_packet.seq = 0
+    pilo_packet.ack = 0
+    pilo_packet.flags = 0
+    pilo_packet.payload = new_flow.pack()
+
+    log.debug("sending broadcast packet")
+    log.debug(pilo_packet)
+
+    packed = pilo_packet.pack()
+
+    sock = socket.socket(socket.AF_INET, # Internet
+                         socket.SOCK_DGRAM) # UDP
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.sendto(packed, (UDP_IP, UDP_PORT))
 
 def launch ():
   """
   Starts the component
   """
 
-  def start_switch (event):
-    log.debug("Controlling %s" % (event.connection,))
-    Pilo(event.connection)
+  # def start_switch (event):
+  #   log.debug("Controlling %s" % (event.connection,))
+  #   PiloController(event.connection)
 
   def run ():
     try:
@@ -148,13 +174,16 @@ def launch ():
 
       reactor.run(installSignalHandlers=0)
 
+
     except Exception:
       print traceback.format_exc()
 
+
+  send_broadcast()
 
   thread = Thread(target=run)
   thread.daemon = True
   thread.start()
 
-  core.openflow.addListenerByName("ConnectionUp", start_switch)
+  # core.openflow.addListenerByName("ConnectionUp", start_switch)
 
