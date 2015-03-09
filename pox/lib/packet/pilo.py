@@ -60,13 +60,20 @@ class pilo(packet_base):
 
     MIN_LEN = 24
 
-    ACK_flag = 0x10
+    ACK_flag = 0x01
+    SYN_flag = 0x02
 
     @property
     def ACK (self): return True if self.flags & self.ACK_flag else False
 
+    @property
+    def SYN (self): return True if self.flags & self.SYN else False
+
     @ACK.setter
     def ACK (self, value): self._setflag(self.ACK_flag, value)
+
+    @SYN.setter
+    def SYN (self, value): self._setflag(self.SYN_flag, value)
 
     def _setflag (self, flag, value):
       self.flags = (self.flags & ~flag) | (flag if value else 0)
@@ -92,9 +99,6 @@ class pilo(packet_base):
         f = ''
         if self.ACK: f += 'A'
 
-        log.debug('src = ' + str(self.src_address))
-        log.debug('dst = ' + str(self.dst_address))
-
         s = '[PILO %s>%s seq:%s ack:%s f:%s]' % (self.src_address,
             self.dst_address, self.seq, self.ack, f)
 
@@ -109,14 +113,8 @@ class pilo(packet_base):
             self.msg('(pilo parse) warning PILO packet data too short to parse header: data len %u' % (dlen,))
             return
 
-        self.dst_address = EthAddr(raw[:6])
-        self.src_address = EthAddr(raw[6:12])
-
-        log.debug('src = ' + str(self.src_address))
-        log.debug('dst = ' + str(self.dst_address))
-
-        raw_msg = raw[12:pilo.MIN_LEN]
-        log.debug('raw_msg len = ' + str(len(raw_msg)))
+        self.src_address  = EthAddr(raw[:6])
+        self.dst_address= EthAddr(raw[6:12])
 
         (self.seq, self.ack, self.flags) \
             = struct.unpack('!III', raw[12:pilo.MIN_LEN])
@@ -138,7 +136,5 @@ class pilo(packet_base):
 
         header = struct.pack('!6s6sIII', src, dst,
                  self.seq, self.ack, self.flags)
-
-        log.debug('pilo header length = ' + str(len(header)))
 
         return header

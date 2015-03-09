@@ -46,12 +46,13 @@ class PiloClient (object):
   A Connection object for that switch is passed to the __init__ function.
   """
   def __init__ (self, connection):
+    global client
 
+    self.unacked = []
     self.connection = connection
 
     # Creates an open flow rule which should send PILO broadcast messages
     # to our handler
-
     broadcast_msg_flow = of.ofp_flow_mod()
     broadcast_msg_flow.priority = 101
     broadcast_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
@@ -67,30 +68,12 @@ class PiloClient (object):
     self.mac_to_port = {}
 
 
-  def resend_packet (self, packet_in, out_port):
-    """
-    Instructs the switch to resend a packet that it had sent to us.
-    "packet_in" is the ofp_packet_in object the switch had sent to the
-    controller due to a table-miss.
-    """
-    msg = of.ofp_packet_out()
-    msg.data = packet_in
-
-    # Add an action to send to the specified port
-    action = of.ofp_action_output(port = out_port)
-    msg.actions.append(action)
-
-    # Send message to switch
-    self.connection.send(msg)
-
-
   def broadcast_ovs_message(self, packet):
     """
     This function will broadcast the message we've received from ovs.
     We need to create a PILO header to wrap whatever we've received from OVS
     """
     log.debug("sending broadcast packet")
-    log.debug(packet)
 
     pilo_packet = pkt.pilo()
     pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr('br-int'))
@@ -100,12 +83,26 @@ class PiloClient (object):
     pilo_packet.flags = 0
     pilo_packet.payload = packet
 
+    self.broadcast_of_msg(pilo_packet)
+
+    self.unacked.append(pilo_packet)
+    core.callDelayed(2, self.check_acked, pilo_packet)
+
+
+  def broadcast_of_msg(self, pilo_packet):
     packed = pilo_packet.pack()
 
     sock = socket.socket(socket.AF_INET, # Internet
                          socket.SOCK_DGRAM) # UDP
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.sendto(packed, (UDP_IP, UDP_PORT))
+
+
+  def check_acked(self, pilo_packet):
+    if pilo_packet in self.unacked:
+      self.broadcast_of_msg(pilo_packet)
+      core.callDelayed(2, self.check_acked, pilo_packet)
+
 
   def _handle_PacketIn (self, event):
     """
@@ -121,11 +118,10 @@ class PiloClient (object):
     log.debug(packet)
 
     eth = packet.find('ethernet')
-    local_mac = get_hw_addr('br-int') #TODO: get interface from parameters? or maybe OVS?
+    local_mac = EthAddr(get_hw_addr('br-int')) #TODO: get interface from parameters? or maybe OVS?
 
-    log.debug('eth src = ' + str(eth.src))
-    log.debug('local mac = ' + str(local_mac))
-    if str(eth.src) == str(local_mac):
+    if eth.src.toRaw() == local_mac.toRaw():
+      log.debug('This is a packet from this switch!')
       return
 
     try:
@@ -138,28 +134,46 @@ class PiloClient (object):
     pilo_packet = pkt.pilo(udp.payload)
     log.debug('PILO packet: ' + str(pilo_packet))
 
-    of_packet = pilo_packet.payload
-    log.debug('OF packet: ' + str(of_packet))
+    of_packet_raw = pilo_packet.payload
+    # TODO: Would be nice to unpack the of_packet in order to read any of the insides
+    # but I can't get it to work at the moment
+    # of_packet = of.ofp_action_base(of_packet_raw)
+
+    dst_mac = EthAddr(pilo_packet.dst_address)
+
+    if dst_mac.toRaw() == local_mac.toRaw():
+      # This sends the openflow rule to our OVS instance
+      self.connection.send(of_packet_raw)
+
+      # Now we want to send/broadcast an ack
+      self.send_ack(pilo_packet)
+
+    else:
+      log.debug('Message not for us, let\'s flood it back out')
+      self.broadcast_ovs_message(packet.pack())
 
 
-    self.connection.send(of_packet)
-    # self.broadcast_ovs_message(packet.pack())
+  def send_ack(self, pilo_packet):
+    ack_seq = pilo_packet.seq + len(pilo_packet.raw)
+    seq_no = pilo_packet.seq
 
+    ack_packet = pkt.pilo()
+    ack_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr('br-int'))
+    ack_packet.dst_address  = EthAddr(pilo_packet.src_address)
+    ack_packet.seq = seq_no
+    ack_packet.ack = ack_seq
+    ack_packet.ACK = True
 
-"""
-PILO Broadcast specific
-"""
+    packed = ack_packet.pack()
 
-class BroadcastHandler(DatagramProtocol):
+    log.debug('sending ack')
+    log.debug(ack_packet)
 
-  def datagramReceived(self, data, (host, port)):
-    log.debug("received %r from %s:%d" % (data, host, port))
+    sock = socket.socket(socket.AF_INET, # Internet
+                         socket.SOCK_DGRAM) # UDP
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.sendto(packed, (UDP_IP, UDP_PORT))
 
-    log.debug("broadcast msg len = " + str(len(data)))
-    broadcast_in = pkt.pilo.unpack(data)
-
-    log.debug("broadcast msg src = " + str(broadcast_in.src_address))
-    log.debug(str(broadcast_in))
 
 def launch ():
   """
@@ -169,31 +183,6 @@ def launch ():
   def start_switch (event):
     log.debug("Controlling %s" % (event.connection,))
     PiloClient(event.connection)
-
-  def run ():
-    try:
-
-      sock = socket.socket(socket.AF_INET, # Internet
-          socket.SOCK_DGRAM) # UDP
-      sock.bind(('', UDP_PORT))
-      sock.setblocking(False)
-
-      port = reactor.adoptDatagramPort(
-          sock.fileno(), socket.AF_INET, BroadcastHandler(), maxPacketSize=65507)
-
-      sock.close()
-
-      log.debug("Listening on %s:%d" % (UDP_IP, UDP_PORT))
-
-      reactor.run(installSignalHandlers=0)
-
-    except Exception:
-      print traceback.format_exc()
-
-
-  thread = Thread(target=run)
-  thread.daemon = True
-  thread.start()
 
   core.openflow.addListenerByName("ConnectionUp", start_switch)
 

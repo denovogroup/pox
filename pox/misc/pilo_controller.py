@@ -21,107 +21,58 @@ from pox.core import core
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
 
+from pox.lib.recoco import Timer
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from twisted.internet.protocol import DatagramProtocol
 from twisted.internet import reactor
 from threading import Thread
-from lib.util import get_hw_addr
+from lib.util import get_hw_addr, get_ip_address
 import socket, struct
 import traceback
 
 log = core.getLogger()
 
+ACK_TIMER = 1 # Amount of time to wait to resend
 UDP_IP = "192.168.1.255"
 UDP_PORT = 5005
-
-TMP_DST_MAC = "08:00:27:33:0b:f4"
-
-
-class PiloController (object):
-  """
-  A PiloController object is created for each switch that connects.
-  A Connection object for that switch is passed to the __init__ function.
-  """
-  def __init__ (self, connection):
-
-    self.connection = connection
-
-    # Creates an open flow rule which should allow our broadcast messages
-    broadcast_msg_flow = of.ofp_flow_mod()
-    broadcast_msg_flow.priority = 101
-    broadcast_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
-    broadcast_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
-    broadcast_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
-    broadcast_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
-    self.connection.send(broadcast_msg_flow)
-
-    # This binds our PacketIn event listener
-    connection.addListeners(self)
-
-    self.mac_to_port = {}
-
-
-  def resend_packet (self, packet_in, out_port):
-    """
-    Instructs the switch to resend a packet that it had sent to us.
-    "packet_in" is the ofp_packet_in object the switch had sent to the
-    controller due to a table-miss.
-    """
-    msg = of.ofp_packet_out()
-    msg.data = packet_in
-
-    # Add an action to send to the specified port
-    action = of.ofp_action_output(port = out_port)
-    msg.actions.append(action)
-
-    # Send message to switch
-    self.connection.send(msg)
-
-
-  def broadcast_message(self, packet):
-    """
-    Broadcast message we've received from ovs
-    """
-    log.debug("sending broadcast packet")
-    log.debug(packet)
-
-    sock = socket.socket(socket.AF_INET, # Internet
-                         socket.SOCK_DGRAM) # UDP
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.sendto(packet, (UDP_IP, UDP_PORT))
-
-  def _handle_PacketIn (self, event):
-    """
-    Handles packet in messages from the switch.
-    """
-
-    packet = event.parsed # This is the parsed packet data.
-    if not packet.parsed:
-      log.warning("Ignoring incomplete packet")
-      return
-
-    eth = packet.find('ethernet')
-    local_mac = get_hw_addr('br-int') #TODO: get interface from parameters? or maybe OVS?
-
-    if str(eth.src) == str(local_mac):
-      return
-
-    self.broadcast_message(packet.pack())
+THIS_IP = get_ip_address('eth1')
+TMP_DST_MAC = "08:00:27:33:0b:f4" # server1 vagrant
+# TMP_DST_MAC = "08:00:27:33:0b:f5" # random testing
 
 class BroadcastHandler(DatagramProtocol):
 
   def datagramReceived(self, data, (host, port)):
+    global controller
     log.debug("received %r from %s:%d" % (data, host, port))
 
-    log.debug("broadcast msg len = " + str(len(data)))
     broadcast_in = pkt.pilo.unpack(data)
-
-    log.debug("broadcast msg src = " + str(broadcast_in.src_address))
     log.debug(str(broadcast_in))
 
+    if THIS_IP == host:
+      log.debug('This came from us, so we can ignore')
 
-def send_broadcast():
+    if broadcast_in.ACK:
+      for unacked in controller.unacked:
+        log.debug(unacked)
+        log.debug(unacked.raw)
+        ack_len = unacked.seq + len(unacked.pack())
 
+        if (EthAddr(unacked.dst_address).toRaw() == EthAddr(broadcast_in.src_address).toRaw() and
+                 broadcast_in.ack == ack_len):
+
+           log.debug('received ack:')
+           log.debug(broadcast_in)
+           controller.unacked.remove(unacked)
+
+
+class PiloController:
+  """
+  A PiloController object will be created once at the startup of POX
+  """
+  def __init__ (self):
+    self.unacked = []
+
+  def send_control_msg(self):
     new_flow = of.ofp_flow_mod()
     new_flow.priority = 102
     new_flow.match.dl_type = pkt.ethernet.IP_TYPE
@@ -131,16 +82,21 @@ def send_broadcast():
 
 
     pilo_packet = pkt.pilo()
-    pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr('br-int'))
+    pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr('eth1'))
     pilo_packet.dst_address  = pkt.packet_utils.mac_string_to_addr(TMP_DST_MAC)
-    pilo_packet.seq = 0
+    pilo_packet.seq = 10
     pilo_packet.ack = 0
-    pilo_packet.flags = 0
+    pilo_packet.ACK = True
     pilo_packet.payload = new_flow.pack()
 
     log.debug("sending broadcast packet")
     log.debug(pilo_packet)
 
+    self.unacked.append(pilo_packet)
+    core.callDelayed(ACK_TIME, self.check_acked, pilo_packet)
+
+
+  def broadcast_of_msg(self, pilo_packet):
     packed = pilo_packet.pack()
 
     sock = socket.socket(socket.AF_INET, # Internet
@@ -148,14 +104,17 @@ def send_broadcast():
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.sendto(packed, (UDP_IP, UDP_PORT))
 
+  def check_acked(self, pilo_packet):
+    if pilo_packet in self.unacked:
+      log.debug('not acked')
+      self.broadcast_of_msg(pilo_packet)
+      core.callDelayed(ACK_TIME, self.check_acked, pilo_packet)
+
+
 def launch ():
   """
   Starts the component
   """
-
-  # def start_switch (event):
-  #   log.debug("Controlling %s" % (event.connection,))
-  #   PiloController(event.connection)
 
   def run ():
     try:
@@ -179,11 +138,11 @@ def launch ():
       print traceback.format_exc()
 
 
-  send_broadcast()
+  global controller
+  controller = PiloController()
+  controller.send_control_msg()
 
   thread = Thread(target=run)
   thread.daemon = True
   thread.start()
-
-  # core.openflow.addListenerByName("ConnectionUp", start_switch)
 
