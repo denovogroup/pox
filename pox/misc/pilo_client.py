@@ -150,7 +150,6 @@ class PiloClient (object):
 
     if pkt.packet_utils.same_mac(dst_mac, local_mac):
 
-      log.debug('ISSUE HERE:')
       log.debug(pilo_packet)
       if pilo_packet.SYN and pilo_packet.ACK:
         # This means that we now have a controller
@@ -188,8 +187,6 @@ class PiloClient (object):
     synack_packet.ack = ack_seq
     synack_packet.ACK = True
     synack_packet.SYN = True
-
-    packed = synack_packet.pack()
 
     log.debug('sending synack')
     log.debug(synack_packet)

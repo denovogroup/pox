@@ -32,7 +32,7 @@ import traceback
 
 log = core.getLogger()
 
-ACK_TIMER = 1 # Amount of time to wait to resend
+ACK_TIMER = 5 # Amount of time to wait to resend
 UDP_IP = "192.168.1.255"
 UDP_PORT = 5005
 THIS_IF = 'eth1'
@@ -51,6 +51,7 @@ class BroadcastHandler(DatagramProtocol):
 
     if THIS_IP == host:
       log.debug('This came from us, so we can ignore')
+      return
 
     if broadcast_in.ACK:
       if broadcast_in.SYN:
@@ -58,16 +59,22 @@ class BroadcastHandler(DatagramProtocol):
         controller.controlling.append(EthAddr(broadcast_in.src_address))
         controller.send_synack(broadcast_in)
 
-      else:
-        for unacked in controller.unacked:
-          log.debug(unacked)
-          ack_len = unacked.seq + len(unacked.pack())
+    for unacked in controller.unacked:
+      log.debug(unacked)
+      ack_len = unacked.seq + len(unacked.pack())
 
-          if pkt.packet_utils.same_mac(unacked.dst_address, broadcast_in.src_address) and broadcast_in.ack == ack_len:
+      if pkt.packet_utils.same_mac(unacked.dst_address, broadcast_in.src_address) and broadcast_in.ack == ack_len:
 
-             log.debug('received ack:')
-             log.debug(broadcast_in)
-             controller.unacked.remove(unacked)
+        log.debug('received ack:')
+        log.debug(broadcast_in)
+
+        log.debug('removing this packet:')
+        log.debug(unacked)
+
+        controller.unacked.remove(unacked)
+        log.debug('any left in unacked?')
+        for unack in controller.unacked:
+          log.debug(unack)
 
 
 class PiloController:
@@ -87,7 +94,7 @@ class PiloController:
     pilo_packet.ack = 0
     pilo_packet.SYN = True
 
-    log.debug("sending broadcast packet")
+    log.debug("sending control packet")
     log.debug(pilo_packet)
 
     self.send_pilo_broadcast(pilo_packet)
@@ -133,6 +140,7 @@ class PiloController:
   def check_acked(self, pilo_packet):
     if pilo_packet in self.unacked:
       log.debug('not acked')
+      log.debug('resending unacked packet')
       self.send_pilo_broadcast(pilo_packet)
       core.callDelayed(ACK_TIMER, self.check_acked, pilo_packet)
 
