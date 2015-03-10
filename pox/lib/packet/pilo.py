@@ -28,9 +28,9 @@
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 #  |                    Acknowledgment Number                      |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |A|S|                                                           |
-#  |C|Y|                                                           |
-#  |K|N|                                                           |
+#  |A|S|                           |                               |
+#  |C|Y|                           |              TTL              |
+#  |K|N|                           |                               |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 #  |                             data                              |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -60,6 +60,8 @@ class pilo(packet_base):
 
     MIN_LEN = 24
 
+    TTL_INIT = 64 # Probably want to better test this?
+
     ACK_flag = 0x01
     SYN_flag = 0x02
 
@@ -87,7 +89,8 @@ class pilo(packet_base):
         self.dst_address  = 0  # 32 bit
         self.seq      = 0  # 32 bit
         self.ack      = 0  # 32 bit
-        self.flags    = 0  # reserved, 2 bits flags 6 bits
+        self.flags    = 0  # flags 16 bits
+        self.ttl      = self.TTL_INIT  # ttl 16 bits
         self.next     = b''
 
         if raw is not None:
@@ -100,8 +103,8 @@ class pilo(packet_base):
         if self.ACK: f += 'A'
         if self.SYN: f += 'S'
 
-        s = '[PILO %s>%s seq:%s ack:%s f:%s]' % (self.src_address,
-            self.dst_address, self.seq, self.ack, f)
+        s = '[PILO %s>%s seq:%s ack:%s f:%s ttl:%s]' % (self.src_address,
+            self.dst_address, self.seq, self.ack, f, self.ttl)
 
         return s
 
@@ -117,8 +120,8 @@ class pilo(packet_base):
         self.src_address  = EthAddr(raw[:6])
         self.dst_address= EthAddr(raw[6:12])
 
-        (self.seq, self.ack, self.flags) \
-            = struct.unpack('!III', raw[12:pilo.MIN_LEN])
+        (self.seq, self.ack, self.flags, self.ttl) \
+            = struct.unpack('!IIHH', raw[12:pilo.MIN_LEN])
 
         self.hdr_len = pilo.MIN_LEN ## TODO: should this be dynamic or will we have fixed header size?
         self.payload_len = dlen - self.hdr_len
@@ -135,7 +138,7 @@ class pilo(packet_base):
         if type(src) is EthAddr:
           src = src.toRaw()
 
-        header = struct.pack('!6s6sIII', src, dst,
-                 self.seq, self.ack, self.flags)
+        header = struct.pack('!6s6sIIHH', src, dst,
+                 self.seq, self.ack, self.flags, self.ttl)
 
         return header

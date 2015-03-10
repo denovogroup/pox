@@ -173,7 +173,12 @@ class PiloClient (object):
 
     else:
       log.debug('Message not for us, let\'s flood it back out')
-      self.broadcast_ovs_message(packet.pack())
+      packet.ttl = packet.ttl - 1
+      if packet.ttl > 0:
+        self.broadcast_ovs_message(packet.pack())
+      else:
+        log.debug('TTL expired:')
+        log.debug(packet)
 
 
   def send_synack(self, pilo_packet):
