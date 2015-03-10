@@ -28,9 +28,9 @@
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 #  |                    Acknowledgment Number                      |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |A|                                                             |
-#  |C|                                                             |
-#  |K|                                                             |
+#  |A|S|                                                           |
+#  |C|Y|                                                           |
+#  |K|N|                                                           |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 #  |                             data                              |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -67,7 +67,7 @@ class pilo(packet_base):
     def ACK (self): return True if self.flags & self.ACK_flag else False
 
     @property
-    def SYN (self): return True if self.flags & self.SYN else False
+    def SYN (self): return True if self.flags & self.SYN_flag else False
 
     @ACK.setter
     def ACK (self, value): self._setflag(self.ACK_flag, value)
@@ -98,6 +98,7 @@ class pilo(packet_base):
     def __str__(self):
         f = ''
         if self.ACK: f += 'A'
+        if self.SYN: f += 'S'
 
         s = '[PILO %s>%s seq:%s ack:%s f:%s]' % (self.src_address,
             self.dst_address, self.seq, self.ack, f)
