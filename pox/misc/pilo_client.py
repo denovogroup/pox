@@ -32,6 +32,7 @@ from lib.util import get_hw_addr
 log = core.getLogger()
 
 UDP_IP = "192.168.1.255"
+THIS_IF = 'br-int'
 UDP_PORT = 5005
 TMP_CONTROLLER_MAC = '08:00:27:28:fa:9c'
 
@@ -48,7 +49,6 @@ class PiloClient (object):
   def __init__ (self, connection):
     global client
 
-    self.unacked = []
     self.connection = connection
 
     # Creates an open flow rule which should send PILO broadcast messages
@@ -65,7 +65,9 @@ class PiloClient (object):
     # This binds our PacketIn event listener
     connection.addListeners(self)
 
-    self.mac_to_port = {}
+    self.unacked = []
+    self.controller_address = 0
+    self.has_controller = False
 
 
   def broadcast_ovs_message(self, packet):
@@ -76,20 +78,20 @@ class PiloClient (object):
     log.debug("sending broadcast packet")
 
     pilo_packet = pkt.pilo()
-    pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr('br-int'))
+    pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
     pilo_packet.dst_address  = pkt.packet_utils.mac_string_to_addr(TMP_CONTROLLER_MAC)
     pilo_packet.seq = 0
     pilo_packet.ack = 0
     pilo_packet.flags = 0
     pilo_packet.payload = packet
 
-    self.broadcast_of_msg(pilo_packet)
+    self.send_pilo_broadcast(pilo_packet)
 
     self.unacked.append(pilo_packet)
     core.callDelayed(2, self.check_acked, pilo_packet)
 
 
-  def broadcast_of_msg(self, pilo_packet):
+  def send_pilo_broadcast(self, pilo_packet):
     packed = pilo_packet.pack()
 
     sock = socket.socket(socket.AF_INET, # Internet
@@ -100,7 +102,7 @@ class PiloClient (object):
 
   def check_acked(self, pilo_packet):
     if pilo_packet in self.unacked:
-      self.broadcast_of_msg(pilo_packet)
+      self.send_pilo_broadcast(pilo_packet)
       core.callDelayed(2, self.check_acked, pilo_packet)
 
 
@@ -118,9 +120,9 @@ class PiloClient (object):
     log.debug(packet)
 
     eth = packet.find('ethernet')
-    local_mac = EthAddr(get_hw_addr('br-int')) #TODO: get interface from parameters? or maybe OVS?
+    local_mac = EthAddr(get_hw_addr(THIS_IF)) #TODO: get interface from parameters? or maybe OVS?
 
-    if eth.src.toRaw() == local_mac.toRaw():
+    if pkt.packet_utils.same_mac(eth.src, local_mac):
       log.debug('This is a packet from this switch!')
       return
 
@@ -131,8 +133,13 @@ class PiloClient (object):
       log.debug(e)
       return
 
-    pilo_packet = pkt.pilo(udp.payload)
-    log.debug('PILO packet: ' + str(pilo_packet))
+    try:
+      pilo_packet = pkt.pilo(udp.payload)
+      log.debug('PILO packet: ' + str(pilo_packet))
+    except Exception as e:
+      log.debug('Can\'t parse PILO packet')
+      log.debug(e)
+      return
 
     of_packet_raw = pilo_packet.payload
     # TODO: Would be nice to unpack the of_packet in order to read any of the insides
@@ -141,16 +148,53 @@ class PiloClient (object):
 
     dst_mac = EthAddr(pilo_packet.dst_address)
 
-    if dst_mac.toRaw() == local_mac.toRaw():
-      # This sends the openflow rule to our OVS instance
-      self.connection.send(of_packet_raw)
+    if pkt.packet_utils.same_mac(dst_mac, local_mac):
 
-      # Now we want to send/broadcast an ack
-      self.send_ack(pilo_packet)
+      log.debug('ISSUE HERE:')
+      log.debug(pilo_packet)
+      if pilo_packet.SYN and pilo_packet.ACK:
+        # This means that we now have a controller
+        self.controller_address = pilo_packet.src_address
+        self.has_controller = True
+
+      elif pilo_packet.SYN:
+        # This is a controller attempting to establish a connection
+        self.send_synack(pilo_packet)
+
+      elif self.has_controller and pkt.packet_utils.same_mac(pilo_packet.src_address, self.controller_address):
+        # This sends the openflow rule to our OVS instance
+        self.connection.send(of_packet_raw)
+
+        # Now we want to send/broadcast an ack
+        self.send_ack(pilo_packet)
+
+      else:
+        log.debug('This looks like an OF message that hasn\'t come from our controller:')
+        log.debug(pilo_packet)
 
     else:
       log.debug('Message not for us, let\'s flood it back out')
       self.broadcast_ovs_message(packet.pack())
+
+
+  def send_synack(self, pilo_packet):
+    ack_seq = pilo_packet.seq + len(pilo_packet.raw)
+    seq_no = pilo_packet.seq
+
+    synack_packet = pkt.pilo()
+    synack_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+    synack_packet.dst_address  = EthAddr(pilo_packet.src_address)
+    synack_packet.seq = seq_no
+    synack_packet.ack = ack_seq
+    synack_packet.ACK = True
+    synack_packet.SYN = True
+
+    packed = synack_packet.pack()
+
+    log.debug('sending synack')
+    log.debug(synack_packet)
+
+    self.send_pilo_broadcast(synack_packet)
 
 
   def send_ack(self, pilo_packet):
@@ -158,7 +202,7 @@ class PiloClient (object):
     seq_no = pilo_packet.seq
 
     ack_packet = pkt.pilo()
-    ack_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr('br-int'))
+    ack_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
     ack_packet.dst_address  = EthAddr(pilo_packet.src_address)
     ack_packet.seq = seq_no
     ack_packet.ack = ack_seq
@@ -169,10 +213,7 @@ class PiloClient (object):
     log.debug('sending ack')
     log.debug(ack_packet)
 
-    sock = socket.socket(socket.AF_INET, # Internet
-                         socket.SOCK_DGRAM) # UDP
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.sendto(packed, (UDP_IP, UDP_PORT))
+    self.send_pilo_broadcast(ack_packet)
 
 
 def launch ():
