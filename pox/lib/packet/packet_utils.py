@@ -23,6 +23,7 @@ Various functionality and data for the packet library
 import array
 import struct
 from socket import ntohs
+from pox.lib.addresses import EthAddr
 
 _ethtype_to_str = {}
 _ipproto_to_str = {}
@@ -129,3 +130,18 @@ def ipproto_to_str (t):
     return _ipproto_to_str[t]
   else:
     return "%02x" % (t,)
+
+def mac_string_to_addr(mac_string):
+  """
+  Given a MAC string of the format xx:xx:xx:xx, return EthAddr
+  """
+  return EthAddr(mac_string.replace(':', '').decode('hex'))
+
+def same_mac(mac1, mac2):
+  """
+  Given two mac addresses (of either EthAddr or string I think),
+  return whether they're the same.
+  I believe that the flexibility of EthAddr's initializer will make this work....
+  """
+  return EthAddr(mac1).toRaw() == EthAddr(mac2).toRaw()
+
