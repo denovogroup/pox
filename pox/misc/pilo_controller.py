@@ -47,8 +47,6 @@ class BroadcastHandler(DatagramProtocol):
     log.debug("received %r from %s:%d" % (data, host, port))
 
     broadcast_in = pkt.pilo.unpack(data)
-    log.debug(str(broadcast_in))
-
     if THIS_IP == host:
       log.debug('This came from us, so we can ignore')
       return
@@ -59,22 +57,22 @@ class BroadcastHandler(DatagramProtocol):
         controller.controlling.append(EthAddr(broadcast_in.src_address))
         controller.send_synack(broadcast_in)
 
-    for unacked in controller.unacked:
-      log.debug(unacked)
-      ack_len = unacked.seq + len(unacked.pack())
-
-      if pkt.packet_utils.same_mac(unacked.dst_address, broadcast_in.src_address) and broadcast_in.ack == ack_len:
-
-        log.debug('received ack:')
-        log.debug(broadcast_in)
-
-        log.debug('removing this packet:')
+      for unacked in controller.unacked:
         log.debug(unacked)
+        ack_len = unacked.seq + len(unacked.pack())
 
-        controller.unacked.remove(unacked)
-        log.debug('any left in unacked?')
-        for unack in controller.unacked:
-          log.debug(unack)
+        if pkt.packet_utils.same_mac(unacked.dst_address, broadcast_in.src_address) and broadcast_in.ack == ack_len:
+
+          log.debug('received ack:')
+          log.debug(broadcast_in)
+
+          log.debug('removing this packet:')
+          log.debug(unacked)
+
+          controller.unacked.remove(unacked)
+          log.debug('any left in unacked?')
+          for unack in controller.unacked:
+            log.debug(unack)
 
 
 class PiloController:
