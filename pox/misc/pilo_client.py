@@ -128,57 +128,66 @@ class PiloClient (object):
 
     try:
       udp = packet.find('udp')
-    except Exception as e:
-      log.debug('Can\'t find udp packet')
-      log.debug(e)
-      return
 
-    try:
       pilo_packet = pkt.pilo(udp.payload)
+
       log.debug('PILO packet: ' + str(pilo_packet))
-    except Exception as e:
-      log.debug('Can\'t parse PILO packet')
-      log.debug(e)
-      return
 
-    of_packet_raw = pilo_packet.payload
-    # TODO: Would be nice to unpack the of_packet in order to read any of the insides
-    # but I can't get it to work at the moment
-    # of_packet = of.ofp_action_base(of_packet_raw)
+      of_packet_raw = pilo_packet.payload
+      # TODO: Would be nice to unpack the of_packet in order to read any of the insides
+      # but I can't get it to work at the moment
+      # of_packet = of.ofp_action_base(of_packet_raw)
 
-    dst_mac = EthAddr(pilo_packet.dst_address)
+      dst_mac = EthAddr(pilo_packet.dst_address)
 
-    if pkt.packet_utils.same_mac(dst_mac, local_mac):
+      if pkt.packet_utils.same_mac(dst_mac, local_mac):
 
-      log.debug(pilo_packet)
-      if pilo_packet.SYN and pilo_packet.ACK:
-        # This means that we now have a controller
-        self.controller_address = pilo_packet.src_address
-        self.has_controller = True
+        log.debug(pilo_packet)
+        if pilo_packet.SYN and pilo_packet.ACK:
+          # This means that we now have a controller
+          self.controller_address = pilo_packet.src_address
+          self.has_controller = True
+          log.debug('We have a PILO controller with address:')
+          log.debug(self.controller_address)
 
-      elif pilo_packet.SYN:
-        # This is a controller attempting to establish a connection
-        self.send_synack(pilo_packet)
+        elif pilo_packet.SYN:
+          # This is a controller attempting to establish a connection
+          self.send_synack(pilo_packet)
 
-      elif self.has_controller and pkt.packet_utils.same_mac(pilo_packet.src_address, self.controller_address):
-        # This sends the openflow rule to our OVS instance
-        self.connection.send(of_packet_raw)
+        elif self.has_controller and pkt.packet_utils.same_mac(pilo_packet.src_address, self.controller_address):
+          # This sends the openflow rule to our OVS instance
+          self.connection.send(of_packet_raw)
 
-        # Now we want to send/broadcast an ack
-        self.send_ack(pilo_packet)
+          # Now we want to send/broadcast an ack
+          self.send_ack(pilo_packet)
+
+        else:
+          log.debug('This looks like an OF message that hasn\'t come from our controller:')
+          log.debug(pilo_packet)
 
       else:
-        log.debug('This looks like an OF message that hasn\'t come from our controller:')
+        log.debug('Message not for us, let\'s flood it back out')
+        packet.ttl = packet.ttl - 1
+        if packet.ttl > 0:
+          self.broadcast_ovs_message(packet.pack())
+        else:
+          log.debug('TTL expired:')
+          log.debug(packet)
+
+    except Exception as e:
+      log.debug(e)
+      log.debug('Can\'t parse PILO packet - this is a packet that ovs doesn\'t know what to do with')
+      # We should send this to the controller to see what it would do with it
+      if self.has_controller:
+        pilo_packet = pkt.pilo()
+        pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+        pilo_packet.dst_address  = EthAddr(self.controller_address)
+        pilo_packet.payload = packet
+
+        log.debug('sending pilo ovs query to controller')
         log.debug(pilo_packet)
 
-    else:
-      log.debug('Message not for us, let\'s flood it back out')
-      packet.ttl = packet.ttl - 1
-      if packet.ttl > 0:
-        self.broadcast_ovs_message(packet.pack())
-      else:
-        log.debug('TTL expired:')
-        log.debug(packet)
+        self.send_pilo_broadcast(pilo_packet)
 
 
   def send_synack(self, pilo_packet):

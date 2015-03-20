@@ -73,6 +73,11 @@ class BroadcastHandler(DatagramProtocol):
           log.debug('any left in unacked?')
           for unack in controller.unacked:
             log.debug(unack)
+    else:
+      # This is an OVS PILO query - we *should* be able to handle it like a normal packet_in
+      log.debug(broadcast_in)
+
+
 
 
 class PiloController:
