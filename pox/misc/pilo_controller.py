@@ -205,14 +205,20 @@ def launch (udp_ip, udp_port, this_if, tmp_dst_mac, ack_timer=5):
   Starts the pilo_controller component
   """
 
-  global ACK_TIMER = ack_timer # Amount of time to wait to resend
-  global UDP_IP = udp_ip
-  global UDP_PORT = udp_port
-  global THIS_IF = this_if
-  global THIS_IP = get_ip_address('eth1')
-  global TMP_DST_MAC = tmp_dst_mac # server1 vagrant
-
+  global ACK_TIMER
+  global UDP_IP
+  global UDP_PORT
+  global THIS_IF
+  global THIS_IP
+  global TMP_DST_MAC
   global controller
+
+  ACK_TIMER = ack_timer # Amount of time to wait to resend
+  UDP_IP = udp_ip
+  UDP_PORT = udp_port
+  THIS_IF = this_if
+  THIS_IP = get_ip_address('eth1')
+  TMP_DST_MAC = tmp_dst_mac # server1 vagrant
 
   def run ():
     try:

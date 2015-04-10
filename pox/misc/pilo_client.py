@@ -226,10 +226,15 @@ def launch (udp_ip, this_if, udp_port, controller_mac):
   Starts the component
   """
 
-  global UDP_IP = udp_ip
-  global THIS_IF = this_if
-  global UDP_PORT = udp_port
-  global CONTROLLER_MAC = controller_mac
+  global UDP_IP
+  global THIS_IF
+  global UDP_PORT
+  global CONTROLLER_MAC
+
+  UDP_IP = udp_ip
+  THIS_IF = this_if
+  UDP_PORT = udp_port
+  CONTROLLER_MAC = controller_mac
 
   def start_switch (event):
     log.debug("Controlling %s" % (event.connection,))
