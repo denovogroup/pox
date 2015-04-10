@@ -32,14 +32,6 @@ import traceback
 
 log = core.getLogger()
 
-ACK_TIMER = 5 # Amount of time to wait to resend
-UDP_IP = "192.168.1.255"
-UDP_PORT = 5005
-THIS_IF = 'eth1'
-THIS_IP = get_ip_address('eth1')
-TMP_DST_MAC = "08:00:27:33:0b:f4" # server1 vagrant
-# TMP_DST_MAC = "08:00:27:33:0b:f5" # random testing
-
 class BroadcastHandler(DatagramProtocol):
 
   def datagramReceived(self, data, (host, port)):
@@ -54,7 +46,10 @@ class BroadcastHandler(DatagramProtocol):
     if broadcast_in.ACK:
       if broadcast_in.SYN:
         # This means that we've established a connection with the client
-        controller.controlling.append(EthAddr(broadcast_in.src_address))
+        controller.controlling.append({
+              'mac_to_port': {},
+              'mac': EthAddr(broadcast_in.src_address)
+            })
         controller.send_synack(broadcast_in)
 
       for unacked in controller.unacked:
@@ -75,9 +70,53 @@ class BroadcastHandler(DatagramProtocol):
             log.debug(unack)
     else:
       # This is an OVS PILO query - we *should* be able to handle it like a normal packet_in
+      # hmmm the thing we don't have right now is an "in_packet" with an in_port though...
+      # We want to match this with a controller.controlling
       log.debug(broadcast_in)
 
+      # inner_packet = broadcast_in.find('ethernet')
+      try:
+        inner_packet = pkt.ethernet(broadcast_in.payload)
+        log.debug('inner packet:')
+        log.debug(inner_packet)
+      except Exception:
+        print traceback.format_exc()
 
+
+      for client in controller.controlling:
+        log.debug(client)
+        if broadcast_in.src_address == client['mac']:
+          pilo_client = client
+
+          # Learn the port for the source MAC
+          pilo_client['mac_to_port'][inner_packet.src] = inner_packet.in_port
+
+          dst_port = pilo_client['mac_to_port'].get(inner_packet.dst)
+
+          if dst_port is not None:
+            log.debug("I know {} is at {}".format(inner_packet.dst, dst_port))
+
+            log.debug("Installing flow from {} (port {}) to {} (port {})..."
+                      .format(inner_packet.src, inner_packet.in_port, inner_packet.dst, dst_port))
+            # Maybe the log statement should have source/destination/port?
+
+            msg = of.ofp_flow_mod()
+
+            # Set fields to match received packet
+            msg.match = of.ofp_match.from_packet(inner_packet)
+
+            # < Set other fields of flow_mod (timeouts? buffer_id?) >
+            msg.idle_timeout = 60
+            msg.match.in_port = inner_packet.in_port
+
+            # < Add an output action, and send -- similar to resend_packet() >
+            action = of.ofp_action_output(port = dst_port)
+            msg.actions.append(action)
+
+            controller.send_control_msg(client, msg)
+
+          else:
+            log.debug("I don't know where {} is".format(inner_packet.dst))
 
 
 class PiloController:
@@ -105,30 +144,23 @@ class PiloController:
     core.callDelayed(ACK_TIMER, self.check_acked, pilo_packet)
 
 
-  def send_control_msg(self):
+  def send_control_msg(self, client, msg):
     # Right now this is just an arbitrary message for testing
     # We'll probably want to take an OF action as a parameter
 
-    new_flow = of.ofp_flow_mod()
-    new_flow.priority = 9
-    new_flow.match.dl_type = pkt.ethernet.IP_TYPE
-    new_flow.match.nw_proto = pkt.ipv4.TCP_PROTOCOL
-    new_flow.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
+    pilo_packet = pkt.pilo()
+    pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+    pilo_packet.dst_address  = client['mac']
+    pilo_packet.seq = 0
+    pilo_packet.ack = 0
+    pilo_packet.payload = msg.pack()
 
-    for client_address in self.controlling:
-      pilo_packet = pkt.pilo()
-      pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-      pilo_packet.dst_address  = client_address
-      pilo_packet.seq = 0
-      pilo_packet.ack = 0
-      pilo_packet.payload = new_flow.pack()
+    log.debug("sending broadcast packet")
+    log.debug(pilo_packet)
 
-      log.debug("sending broadcast packet")
-      log.debug(pilo_packet)
-
-      self.send_pilo_broadcast(pilo_packet)
-      self.unacked.append(pilo_packet)
-      core.callDelayed(ACK_TIMER, self.check_acked, pilo_packet)
+    self.send_pilo_broadcast(pilo_packet)
+    self.unacked.append(pilo_packet)
+    core.callDelayed(ACK_TIMER, self.check_acked, pilo_packet)
 
 
   def send_pilo_broadcast(self, pilo_packet):
@@ -168,10 +200,18 @@ class PiloController:
     self.send_pilo_broadcast(synack_packet)
 
 
-def launch ():
+def launch (udp_ip, udp_port, this_if, tmp_dst_mac, ack_timer=5):
   """
   Starts the pilo_controller component
   """
+
+  global ACK_TIMER = ack_timer # Amount of time to wait to resend
+  global UDP_IP = udp_ip
+  global UDP_PORT = udp_port
+  global THIS_IF = this_if
+  global THIS_IP = get_ip_address('eth1')
+  global TMP_DST_MAC = tmp_dst_mac # server1 vagrant
+
   global controller
 
   def run ():

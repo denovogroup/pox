@@ -31,12 +31,6 @@ from lib.util import get_hw_addr
 
 log = core.getLogger()
 
-UDP_IP = "192.168.1.255"
-THIS_IF = 'br-int'
-UDP_PORT = 5005
-TMP_CONTROLLER_MAC = '08:00:27:28:fa:9c'
-
-
 """
 Traditional POX code
 """
@@ -79,7 +73,7 @@ class PiloClient (object):
 
     pilo_packet = pkt.pilo()
     pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-    pilo_packet.dst_address  = pkt.packet_utils.mac_string_to_addr(TMP_CONTROLLER_MAC)
+    pilo_packet.dst_address  = pkt.packet_utils.mac_string_to_addr(CONTROLLER_MAC)
     pilo_packet.seq = 0
     pilo_packet.ack = 0
     pilo_packet.flags = 0
@@ -227,10 +221,15 @@ class PiloClient (object):
     self.send_pilo_broadcast(ack_packet)
 
 
-def launch ():
+def launch (udp_ip, this_if, udp_port, controller_mac):
   """
   Starts the component
   """
+
+  global UDP_IP = udp_ip
+  global THIS_IF = this_if
+  global UDP_PORT = udp_port
+  global CONTROLLER_MAC = controller_mac
 
   def start_switch (event):
     log.debug("Controlling %s" % (event.connection,))
