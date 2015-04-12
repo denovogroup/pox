@@ -69,7 +69,7 @@ class PiloClient (object):
     This function will broadcast the message we've received from ovs.
     We need to create a PILO header to wrap whatever we've received from OVS
     """
-    log.debug("sending broadcast packet")
+    log.debug("sending broadcast packet:")
 
     pilo_packet = pkt.pilo()
     pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
@@ -178,7 +178,7 @@ class PiloClient (object):
         pilo_packet.dst_address  = EthAddr(self.controller_address)
         pilo_packet.payload = packet
 
-        log.debug('sending pilo ovs query to controller')
+        log.debug('sending pilo ovs query to controller:')
         log.debug(pilo_packet)
 
         self.send_pilo_broadcast(pilo_packet)
@@ -196,7 +196,7 @@ class PiloClient (object):
     synack_packet.ACK = True
     synack_packet.SYN = True
 
-    log.debug('sending synack')
+    log.debug('sending synack:')
     log.debug(synack_packet)
 
     self.send_pilo_broadcast(synack_packet)
@@ -215,7 +215,7 @@ class PiloClient (object):
 
     packed = ack_packet.pack()
 
-    log.debug('sending ack')
+    log.debug('sending ack:')
     log.debug(ack_packet)
 
     self.send_pilo_broadcast(ack_packet)

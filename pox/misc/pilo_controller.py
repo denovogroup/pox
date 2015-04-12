@@ -136,7 +136,7 @@ class PiloController:
     pilo_packet.ack = 0
     pilo_packet.SYN = True
 
-    log.debug("sending control packet")
+    log.debug("sending control packet:")
     log.debug(pilo_packet)
 
     self.send_pilo_broadcast(pilo_packet)
@@ -155,7 +155,7 @@ class PiloController:
     pilo_packet.ack = 0
     pilo_packet.payload = msg.pack()
 
-    log.debug("sending broadcast packet")
+    log.debug("sending broadcast packet:")
     log.debug(pilo_packet)
 
     self.send_pilo_broadcast(pilo_packet)
@@ -175,7 +175,8 @@ class PiloController:
   def check_acked(self, pilo_packet):
     if pilo_packet in self.unacked:
       log.debug('not acked')
-      log.debug('resending unacked packet')
+      log.debug('resending unacked packet:')
+      log.debug(pilo_packet)
       self.send_pilo_broadcast(pilo_packet)
       core.callDelayed(ACK_TIMER, self.check_acked, pilo_packet)
 
@@ -194,7 +195,7 @@ class PiloController:
 
     packed = synack_packet.pack()
 
-    log.debug('sending synack')
+    log.debug('sending synack:')
     log.debug(synack_packet)
 
     self.send_pilo_broadcast(synack_packet)
