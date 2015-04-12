@@ -233,7 +233,7 @@ def launch (udp_ip, this_if, udp_port, controller_mac):
 
   UDP_IP = udp_ip
   THIS_IF = this_if
-  UDP_PORT = udp_port
+  UDP_PORT = int(udp_port)
   CONTROLLER_MAC = controller_mac
 
   def start_switch (event):

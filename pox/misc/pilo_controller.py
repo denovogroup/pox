@@ -217,7 +217,7 @@ def launch (udp_ip, udp_port, this_if, tmp_dst_mac, ack_timer="5"):
   UDP_IP = udp_ip
   UDP_PORT = int(udp_port)
   THIS_IF = this_if
-  THIS_IP = get_ip_address('eth1')
+  THIS_IP = get_ip_address(THIS_IF)
   TMP_DST_MAC = tmp_dst_mac # server1 vagrant
 
   def run ():
