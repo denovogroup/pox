@@ -200,7 +200,7 @@ class PiloController:
     self.send_pilo_broadcast(synack_packet)
 
 
-def launch (udp_ip, udp_port, this_if, tmp_dst_mac, ack_timer=5):
+def launch (udp_ip, udp_port, this_if, tmp_dst_mac, ack_timer="5"):
   """
   Starts the pilo_controller component
   """
@@ -213,9 +213,9 @@ def launch (udp_ip, udp_port, this_if, tmp_dst_mac, ack_timer=5):
   global TMP_DST_MAC
   global controller
 
-  ACK_TIMER = ack_timer # Amount of time to wait to resend
+  ACK_TIMER = int(ack_timer) # Amount of time to wait to resend
   UDP_IP = udp_ip
-  UDP_PORT = udp_port
+  UDP_PORT = int(udp_port)
   THIS_IF = this_if
   THIS_IP = get_ip_address('eth1')
   TMP_DST_MAC = tmp_dst_mac # server1 vagrant
