@@ -106,34 +106,7 @@ class BroadcastHandler(DatagramProtocol):
             log.debug(client)
             pilo_client = client
 
-            # Learn the port for the source MAC
-            pilo_client['mac_to_port'][ethernet_packet.src] = inner_packet.in_port
-
-            dst_port = pilo_client['mac_to_port'].get(ethernet_packet.dst)
-
-            if dst_port is not None:
-              log.debug("I know {} is at {}".format(ethernet_packet.dst, dst_port))
-
-              log.debug("Installing flow from {} (port {}) to {} (port {})..."
-                        .format(ethernet_packet.src, inner_packet.in_port, ethernet_packet.dst, dst_port))
-
-              msg = of.ofp_flow_mod()
-
-              # Set fields to match received packet
-              msg.match = of.ofp_match.from_packet(inner_packet)
-
-              # < Set other fields of flow_mod (timeouts? buffer_id?) >
-              msg.idle_timeout = 60
-              msg.match.in_port = inner_packet.in_port
-
-              # < Add an output action, and send -- similar to resend_packet() >
-              action = of.ofp_action_output(port = dst_port)
-              msg.actions.append(action)
-
-              controller.send_control_msg(client, msg)
-
-            else:
-              log.debug("I don't know where {} is".format(ethernet_packet.dst))
+            # TODO: This is where we would send back OF messages to switch
 
       except Exception:
         log.debug(traceback.format_exc())
