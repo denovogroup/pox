@@ -48,13 +48,32 @@ class PiloClient (object):
     # Creates an open flow rule which should send PILO broadcast messages
     # to our handler
     broadcast_msg_flow = of.ofp_flow_mod()
-    broadcast_msg_flow.priority = 101
+    broadcast_msg_flow.priority = 100
     broadcast_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
     broadcast_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
     broadcast_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
     broadcast_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
 
     self.connection.send(broadcast_msg_flow)
+
+    normal_msg_flow = of.ofp_flow_mod()
+    normal_msg_flow.priority = 101
+    normal_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
+    normal_msg_flow.match.dl_src = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+    normal_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
+    normal_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
+    normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_NORMAL))
+
+    self.connection.send(normal_msg_flow)
+
+    # A Final rule to send any ovs rule misses to the controller
+    # I believe that OF 1.0 does this automatically, but later versions do not
+    table_miss_msg_flow = of.ofp_flow_mod()
+    table_miss_msg_flow.priority = 1
+    table_miss_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
+
+    self.connection.send(table_miss_msg_flow)
+
 
     # This binds our PacketIn event listener
     connection.addListeners(self)
@@ -114,7 +133,7 @@ class PiloClient (object):
     log.debug(packet)
 
     eth = packet.find('ethernet')
-    local_mac = EthAddr(get_hw_addr(THIS_IF)) #TODO: get interface from parameters? or maybe OVS?
+    local_mac = EthAddr(get_hw_addr(THIS_IF))
 
     if pkt.packet_utils.same_mac(eth.src, local_mac):
       log.debug('This is a packet from this switch!')
@@ -171,17 +190,27 @@ class PiloClient (object):
     except Exception as e:
       log.debug(e)
       log.debug('Can\'t parse PILO packet - this is a packet that ovs doesn\'t know what to do with')
-      # We should send this to the controller to see what it would do with it
-      if self.has_controller:
-        pilo_packet = pkt.pilo()
-        pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-        pilo_packet.dst_address  = EthAddr(self.controller_address)
-        pilo_packet.payload = packet
 
-        log.debug('sending pilo ovs query to controller:')
-        log.debug(pilo_packet)
+      try:
+        log.debug('Attempting to get "packet_in"')
+        packet_in = event.ofp # The actual ofp_packet_in message.
+        log.debug('packet_in:')
+        # log.debug(packet_in)
 
-        self.send_pilo_broadcast(pilo_packet)
+        # We should send this to the controller to see what it would do with it
+        if self.has_controller:
+          pilo_packet = pkt.pilo()
+          pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+          pilo_packet.dst_address  = EthAddr(self.controller_address)
+          pilo_packet.payload = packet_in.pack()
+
+          log.debug('sending pilo ovs query to controller:')
+          log.debug(pilo_packet)
+
+          self.send_pilo_broadcast(pilo_packet)
+
+      except Exception as e:
+        log.debug(e)
 
 
   def send_synack(self, pilo_packet):
@@ -200,7 +229,6 @@ class PiloClient (object):
     log.debug(synack_packet)
 
     self.send_pilo_broadcast(synack_packet)
-
 
   def send_ack(self, pilo_packet):
     ack_seq = pilo_packet.seq + len(pilo_packet.raw)

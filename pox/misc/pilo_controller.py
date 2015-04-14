@@ -29,6 +29,7 @@ from threading import Thread
 from lib.util import get_hw_addr, get_ip_address
 import socket, struct
 import traceback
+import json
 
 log = core.getLogger()
 
@@ -38,19 +39,34 @@ class BroadcastHandler(DatagramProtocol):
     global controller
     log.debug("received %r from %s:%d" % (data, host, port))
 
-    broadcast_in = pkt.pilo.unpack(data)
-    if THIS_IP == host:
+    try:
+      broadcast_in = pkt.pilo.unpack(data)
+    except Exception as e:
+      log.debug(e)
+      log.debug('Can\'t parse as PILO packet')
+      return
+
+    log.debug('PILO Packet:')
+    log.debug(broadcast_in)
+
+    if pkt.packet_utils.same_mac(pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF)), broadcast_in.src_address):
       log.debug('This came from us, so we can ignore')
       return
 
     if broadcast_in.ACK:
       if broadcast_in.SYN:
-        # This means that we've established a connection with the client
-        controller.controlling.append({
-              'mac_to_port': {},
-              'mac': EthAddr(broadcast_in.src_address)
-            })
-        controller.send_synack(broadcast_in)
+        already_controlling = False
+        for controlled in controller.controlling:
+          if pkt.packet_utils.same_mac(controlled['mac'], broadcast_in.src_address):
+            already_controlling = True
+
+        if not already_controlling:
+          # This means that we've established a connection with the client
+          controller.controlling.append({
+                'mac_to_port': {},
+                'mac': EthAddr(broadcast_in.src_address)
+              })
+          controller.send_synack(broadcast_in)
 
       for unacked in controller.unacked:
         log.debug(unacked)
@@ -65,59 +81,62 @@ class BroadcastHandler(DatagramProtocol):
           log.debug(unacked)
 
           controller.unacked.remove(unacked)
-          log.debug('any left in unacked?')
+          log.debug('Left in unacked?')
           for unack in controller.unacked:
             log.debug(unack)
+          log.debug('End left in unacked')
     else:
       # This is an OVS PILO query - we *should* be able to handle it like a normal packet_in
       # hmmm the thing we don't have right now is an "in_packet" with an in_port though...
       # We want to match this with a controller.controlling
       log.debug(broadcast_in)
 
-      # inner_packet = broadcast_in.find('ethernet')
       try:
-        inner_packet = pkt.ethernet(broadcast_in.payload)
-        log.debug('inner packet:')
-        log.debug(inner_packet)
+        inner_packet = of.ofp_packet_in()
+        inner_packet.unpack(broadcast_in.payload)
+        log.debug('ofp_packet_in packet:')
+        # log.debug(inner_packet)
+        ethernet_packet = pkt.ethernet(inner_packet.data)
+        log.debug('ethernet packet:')
+        log.debug(ethernet_packet)
+
+        for client in controller.controlling:
+          if broadcast_in.src_address == client['mac']:
+            log.debug('This PILO packet matches our client:')
+            log.debug(client)
+            pilo_client = client
+
+            # Learn the port for the source MAC
+            pilo_client['mac_to_port'][ethernet_packet.src] = inner_packet.in_port
+
+            dst_port = pilo_client['mac_to_port'].get(ethernet_packet.dst)
+
+            if dst_port is not None:
+              log.debug("I know {} is at {}".format(ethernet_packet.dst, dst_port))
+
+              log.debug("Installing flow from {} (port {}) to {} (port {})..."
+                        .format(ethernet_packet.src, inner_packet.in_port, ethernet_packet.dst, dst_port))
+
+              msg = of.ofp_flow_mod()
+
+              # Set fields to match received packet
+              msg.match = of.ofp_match.from_packet(inner_packet)
+
+              # < Set other fields of flow_mod (timeouts? buffer_id?) >
+              msg.idle_timeout = 60
+              msg.match.in_port = inner_packet.in_port
+
+              # < Add an output action, and send -- similar to resend_packet() >
+              action = of.ofp_action_output(port = dst_port)
+              msg.actions.append(action)
+
+              controller.send_control_msg(client, msg)
+
+            else:
+              log.debug("I don't know where {} is".format(ethernet_packet.dst))
+
       except Exception:
-        print traceback.format_exc()
-
-
-      for client in controller.controlling:
-        log.debug(client)
-        if broadcast_in.src_address == client['mac']:
-          pilo_client = client
-
-          # Learn the port for the source MAC
-          pilo_client['mac_to_port'][inner_packet.src] = inner_packet.in_port
-
-          dst_port = pilo_client['mac_to_port'].get(inner_packet.dst)
-
-          if dst_port is not None:
-            log.debug("I know {} is at {}".format(inner_packet.dst, dst_port))
-
-            log.debug("Installing flow from {} (port {}) to {} (port {})..."
-                      .format(inner_packet.src, inner_packet.in_port, inner_packet.dst, dst_port))
-            # Maybe the log statement should have source/destination/port?
-
-            msg = of.ofp_flow_mod()
-
-            # Set fields to match received packet
-            msg.match = of.ofp_match.from_packet(inner_packet)
-
-            # < Set other fields of flow_mod (timeouts? buffer_id?) >
-            msg.idle_timeout = 60
-            msg.match.in_port = inner_packet.in_port
-
-            # < Add an output action, and send -- similar to resend_packet() >
-            action = of.ofp_action_output(port = dst_port)
-            msg.actions.append(action)
-
-            controller.send_control_msg(client, msg)
-
-          else:
-            log.debug("I don't know where {} is".format(inner_packet.dst))
-
+        log.debug(traceback.format_exc())
 
 class PiloController:
   """
@@ -145,8 +164,7 @@ class PiloController:
 
 
   def send_control_msg(self, client, msg):
-    # Right now this is just an arbitrary message for testing
-    # We'll probably want to take an OF action as a parameter
+    # Takes an of message and sends it to client via PILO
 
     pilo_packet = pkt.pilo()
     pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
@@ -243,15 +261,20 @@ def launch (udp_ip, udp_port, this_if, tmp_dst_mac, ack_timer="5"):
       print traceback.format_exc()
 
 
-  def check_control():
+  def check_control(dst_mac):
+    success = False
     if len(controller.controlling) > 0:
-      controller.send_control_msg()
-      return False
+      for controlled in controller.controlling:
+        if controlled['mac'] == dst_mac:
+          log.debug('Controlling: %s', dst_mac)
+          success = True
+
+    return success
 
   controller = PiloController()
   controller.take_control(TMP_DST_MAC)
 
-  Timer(3, check_control, recurring = True)
+  Timer(3, check_control, args = [TMP_DST_MAC], recurring = True)
 
   thread = Thread(target=run)
   thread.daemon = True
