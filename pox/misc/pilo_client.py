@@ -20,6 +20,7 @@ This component will implement the PILO (physically in band logically out of band
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
+from pox.misc.pilo_transport import PiloSender, PiloReceiver
 
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from twisted.internet.protocol import DatagramProtocol
@@ -40,10 +41,11 @@ class PiloClient (object):
   A Pilo object is created for each switch that connects.
   A Connection object for that switch is passed to the __init__ function.
   """
-  def __init__ (self, connection):
-    global client
+  def __init__ (self, connection, sender, receiver):
 
     self.connection = connection
+    self.sender = sender
+    self.receiver = receiver
 
     # Creates an open flow rule which should send PILO broadcast messages
     # to our handler
@@ -78,7 +80,6 @@ class PiloClient (object):
     # This binds our PacketIn event listener
     connection.addListeners(self)
 
-    self.unacked = []
     self.controller_address = 0
     self.has_controller = False
 
@@ -93,30 +94,10 @@ class PiloClient (object):
     pilo_packet = pkt.pilo()
     pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
     pilo_packet.dst_address  = pkt.packet_utils.mac_string_to_addr(CONTROLLER_MAC)
-    pilo_packet.seq = 0
-    pilo_packet.ack = 0
     pilo_packet.flags = 0
     pilo_packet.payload = packet
 
-    self.send_pilo_broadcast(pilo_packet)
-
-    self.unacked.append(pilo_packet)
-    core.callDelayed(2, self.check_acked, pilo_packet)
-
-
-  def send_pilo_broadcast(self, pilo_packet):
-    packed = pilo_packet.pack()
-
-    sock = socket.socket(socket.AF_INET, # Internet
-                         socket.SOCK_DGRAM) # UDP
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.sendto(packed, (UDP_IP, UDP_PORT))
-
-
-  def check_acked(self, pilo_packet):
-    if pilo_packet in self.unacked:
-      self.send_pilo_broadcast(pilo_packet)
-      core.callDelayed(2, self.check_acked, pilo_packet)
+    self.sender.send(pilo_packet)
 
 
   def _handle_PacketIn (self, event):
@@ -146,11 +127,6 @@ class PiloClient (object):
 
       log.debug('PILO packet: ' + str(pilo_packet))
 
-      of_packet_raw = pilo_packet.payload
-      # TODO: Would be nice to unpack the of_packet in order to read any of the insides
-      # but I can't get it to work at the moment
-      # of_packet = of.ofp_action_base(of_packet_raw)
-
       dst_mac = EthAddr(pilo_packet.dst_address)
 
       if pkt.packet_utils.same_mac(dst_mac, local_mac):
@@ -165,14 +141,22 @@ class PiloClient (object):
 
         elif pilo_packet.SYN:
           # This is a controller attempting to establish a connection
-          self.send_synack(pilo_packet)
+          self.sender.send_synack(pilo_packet)
+
+        elif pilo_packet.ACK:
+          # Handle ack reception
+          self.sender.handle_ack(pilo_packet)
 
         elif self.has_controller and pkt.packet_utils.same_mac(pilo_packet.src_address, self.controller_address):
+
           # This sends the openflow rule to our OVS instance
-          self.connection.send(of_packet_raw)
+          def of_to_ovs(pilo_packet):
+            of_packet_raw = pilo_packet.payload
+            self.connection.send(of_packet_raw)
+
 
           # Now we want to send/broadcast an ack
-          self.send_ack(pilo_packet)
+          self.receiver.handle_packet_in(pilo_packet, of_to_ovs)
 
         else:
           log.debug('This looks like an OF message that hasn\'t come from our controller:')
@@ -180,12 +164,12 @@ class PiloClient (object):
 
       else:
         log.debug('Message not for us, let\'s flood it back out')
-        packet.ttl = packet.ttl - 1
-        if packet.ttl > 0:
+        pilo_packet.ttl = pilo_packet.ttl - 1
+        if pilo_packet.ttl > 0:
           self.broadcast_ovs_message(packet.pack())
         else:
           log.debug('TTL expired:')
-          log.debug(packet)
+          log.debug(pilo_packet)
 
     except Exception as e:
       log.debug(e)
@@ -207,49 +191,12 @@ class PiloClient (object):
           log.debug('sending pilo ovs query to controller:')
           log.debug(pilo_packet)
 
-          self.send_pilo_broadcast(pilo_packet)
+          self.sender.send(pilo_packet)
 
       except Exception as e:
         log.debug(e)
 
-
-  def send_synack(self, pilo_packet):
-    ack_seq = pilo_packet.seq + len(pilo_packet.raw)
-    seq_no = pilo_packet.seq
-
-    synack_packet = pkt.pilo()
-    synack_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-    synack_packet.dst_address  = EthAddr(pilo_packet.src_address)
-    synack_packet.seq = seq_no
-    synack_packet.ack = ack_seq
-    synack_packet.ACK = True
-    synack_packet.SYN = True
-
-    log.debug('sending synack:')
-    log.debug(synack_packet)
-
-    self.send_pilo_broadcast(synack_packet)
-
-  def send_ack(self, pilo_packet):
-    ack_seq = pilo_packet.seq + len(pilo_packet.raw)
-    seq_no = pilo_packet.seq
-
-    ack_packet = pkt.pilo()
-    ack_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-    ack_packet.dst_address  = EthAddr(pilo_packet.src_address)
-    ack_packet.seq = seq_no
-    ack_packet.ack = ack_seq
-    ack_packet.ACK = True
-
-    packed = ack_packet.pack()
-
-    log.debug('sending ack:')
-    log.debug(ack_packet)
-
-    self.send_pilo_broadcast(ack_packet)
-
-
-def launch (udp_ip, this_if, udp_port, controller_mac):
+def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5"):
   """
   Starts the component
   """
@@ -263,10 +210,15 @@ def launch (udp_ip, this_if, udp_port, controller_mac):
   THIS_IF = this_if
   UDP_PORT = int(udp_port)
   CONTROLLER_MAC = controller_mac
+  src_ip = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+  src_address = get_hw_addr(THIS_IF)
 
   def start_switch (event):
+    sender = PiloSender(UDP_IP, UDP_PORT, int(retransmission_timeout), src_address)
+    receiver = PiloReceiver(src_ip, UDP_IP, UDP_PORT)
+
     log.debug("Controlling %s" % (event.connection,))
-    PiloClient(event.connection)
+    PiloClient(event.connection, sender, receiver)
 
   core.openflow.addListenerByName("ConnectionUp", start_switch)
 
