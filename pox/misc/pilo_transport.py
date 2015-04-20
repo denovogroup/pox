@@ -57,7 +57,6 @@ class PiloSender(PiloTransport):
     log.debug(packet)
     packet.seq = self.seq_no
     self.seq_no += len(packet.pack())
-    log.debug('len: ' + str(len(packet.pack())))
 
     self.send_pilo_broadcast(packet)
     self.in_transit.append(packet)
@@ -124,12 +123,16 @@ class PiloReceiver(PiloTransport):
     first_msg = True
     this_sender = None
 
+    log.debug('Senders: ')
+    log.debug(self.senders)
+
     # Check if we've received a packet from this sender
     for sender in self.senders:
       if pkt.packet_utils.same_mac(sender['address'], pilo_packet.src_address):
         this_sender = sender
         first_msg = False
 
+    log.debug('First msg: ' + str(first_msg))
     # If we haven't received a packet from this sender
     # create new sender obj or dict
     # send ack
@@ -147,7 +150,7 @@ class PiloReceiver(PiloTransport):
     else:
       # If we have received a packet from this sender
       # check if this matches sender's seq_no
-      if this_sender['seq_no'] == pilo_packet.ack:
+      if this_sender['seq_no'] == pilo_packet.seq:
         # If this packet matches the sender's seq_no
         # send ack for this packet
         # update this sender's seq_no
@@ -171,6 +174,7 @@ class PiloReceiver(PiloTransport):
 
 
   def send_ack(self, pilo_packet):
+
     ack_seq = pilo_packet.seq + len(pilo_packet.pack())
     seq_no = pilo_packet.seq
 
