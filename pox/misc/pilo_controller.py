@@ -25,7 +25,6 @@ from pox.misc.pilo_transport import PiloSender, PiloReceiver
 from pox.lib.recoco import Timer
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from lib.util import get_hw_addr, get_ip_address
-import socket, struct
 import traceback
 import json
 
@@ -35,7 +34,7 @@ class PiloController:
   """
   A PiloController object will be created once at the startup of POX
   """
-  def __init__ (self, connection, clients, sender, receiver):
+  def __init__ (self, connection, client_macs, sender, receiver):
 
     self.connection = connection
     self.unacked = []
@@ -43,8 +42,8 @@ class PiloController:
     self.sender = sender
     self.receiver = receiver
 
-    for client in clients:
-      self.sender.send_syn(client)
+    for client_mac in client_macs:
+      self.sender.send_syn(client_mac)
 
     # Creates an open flow rule which should send PILO broadcast messages
     # to our handler
@@ -181,6 +180,8 @@ class PiloController:
             except Exception:
               log.debug(traceback.format_exc())
 
+          log.debug('handle packet in:')
+          log.debug(pilo_packet)
           self.receiver.handle_packet_in(pilo_packet, handle_pilo_message)
 
     except Exception as e:
@@ -189,7 +190,7 @@ class PiloController:
       return
 
 
-def launch (udp_ip, udp_port, this_if, tmp_dst_mac, retransmission_timeout="5"):
+def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5"):
   """
   Starts the pilo_controller component
   """
@@ -198,19 +199,15 @@ def launch (udp_ip, udp_port, this_if, tmp_dst_mac, retransmission_timeout="5"):
   global UDP_PORT
   global THIS_IF
   global THIS_IP
-  global TMP_DST_MAC
   global controller
 
   UDP_IP = udp_ip
   UDP_PORT = int(udp_port)
   THIS_IF = this_if
   THIS_IP = get_ip_address(THIS_IF)
-  TMP_DST_MAC = tmp_dst_mac # server1 vagrant
   src_ip = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
   src_address = get_hw_addr(THIS_IF)
-
-  # TODO: Take this in from command line!
-  clients = [TMP_DST_MAC]
+  client_macs = client_macs.split(',')
 
   sender = PiloSender(UDP_IP, UDP_PORT, int(retransmission_timeout), src_address)
   receiver = PiloReceiver(src_ip, UDP_IP, UDP_PORT)
@@ -220,7 +217,7 @@ def launch (udp_ip, udp_port, this_if, tmp_dst_mac, retransmission_timeout="5"):
     receiver = PiloReceiver(src_ip, UDP_IP, UDP_PORT)
 
     log.debug("Controlling %s" % (event.connection,))
-    PiloController(event.connection, clients, sender, receiver)
+    PiloController(event.connection, client_macs, sender, receiver)
 
   core.openflow.addListenerByName("ConnectionUp", start_switch)
 
