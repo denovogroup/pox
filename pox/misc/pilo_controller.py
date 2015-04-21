@@ -128,61 +128,64 @@ class PiloController:
       log.debug('PILO packet: ' + str(pilo_packet))
 
       dst_mac = EthAddr(pilo_packet.dst_address)
+      src_mac = EthAddr(pilo_packet.src_address)
 
-      if pkt.packet_utils.same_mac(dst_mac, local_mac):
+      if pkt.packet_utils.same_mac(local_mac, src_mac):
+        log.debug('This came from us, so we can ignore')
+        return
 
-        if pkt.packet_utils.same_mac(get_hw_addr(THIS_IF), pilo_packet.src_address):
-          log.debug('This came from us, so we can ignore')
-          return
+      if not pkt.packet_utils.same_mac(dst_mac, local_mac):
+        log.debug('This PILO packet is not destined for us')
+        return
 
-        if pilo_packet.ACK:
-          if pilo_packet.SYN:
-            already_controlling = False
-            for controlled in self.controlling:
-              if pkt.packet_utils.same_mac(controlled['mac'], pilo_packet.src_address):
-                already_controlling = True
+      if pilo_packet.ACK:
+        if pilo_packet.SYN:
+          already_controlling = False
+          for controlled in self.controlling:
+            if pkt.packet_utils.same_mac(controlled['mac'], pilo_packet.src_address):
+              already_controlling = True
 
-            if not already_controlling:
-              # This means that we've established a connection with the client
-              log.debug('Controlling: ' + str(pilo_packet.src_address))
-              self.controlling.append({
-                    'mac_to_port': {},
-                    'mac': EthAddr(pilo_packet.src_address)
-                  })
-              self.sender.send_synack(pilo_packet)
+          if not already_controlling:
+            # This means that we've established a connection with the client
+            log.debug('Controlling: ' + str(pilo_packet.src_address))
+            self.controlling.append({
+                  'mac_to_port': {},
+                  'mac': EthAddr(pilo_packet.src_address)
+                })
+            self.sender.send_synack(pilo_packet)
 
-          self.sender.handle_ack(pilo_packet)
+        self.sender.handle_ack(pilo_packet)
 
-        else:
-          # This is an OVS PILO query - we *should* be able to handle it like a normal packet_in
-          log.debug(pilo_packet)
+      else:
+        # This is an OVS PILO query - we *should* be able to handle it like a normal packet_in
+        log.debug(pilo_packet)
 
-          def handle_pilo_message(pilo_packet):
-            try:
-              inner_packet = of.ofp_packet_in()
-              log.debug('attempting to unpack payload from:')
-              log.debug(pilo_packet)
-              inner_packet.unpack(pilo_packet.payload)
-              log.debug('ofp_packet_in packet:')
-              # log.debug(inner_packet)
-              ethernet_packet = pkt.ethernet(inner_packet.data)
-              log.debug('ethernet packet:')
-              log.debug(ethernet_packet)
+        def handle_pilo_message(pilo_packet):
+          try:
+            inner_packet = of.ofp_packet_in()
+            log.debug('attempting to unpack payload from:')
+            log.debug(pilo_packet)
+            inner_packet.unpack(pilo_packet.payload)
+            log.debug('ofp_packet_in packet:')
+            # log.debug(inner_packet)
+            ethernet_packet = pkt.ethernet(inner_packet.data)
+            log.debug('ethernet packet:')
+            log.debug(ethernet_packet)
 
-              for client in self.controlling:
-                if pilo_packet.src_address == client['mac']:
-                  log.debug('This PILO packet matches our client:')
-                  log.debug(client)
-                  pilo_client = client
+            for client in self.controlling:
+              if pilo_packet.src_address == client['mac']:
+                log.debug('This PILO packet matches our client:')
+                log.debug(client)
+                pilo_client = client
 
-                  # TODO: This is where we would send back OF messages to switch
+                # TODO: This is where we would send back OF messages to switch
 
-            except Exception:
-              log.debug(traceback.format_exc())
+          except Exception:
+            log.debug(traceback.format_exc())
 
-          log.debug('handle packet in:')
-          log.debug(pilo_packet)
-          self.receiver.handle_packet_in(pilo_packet, handle_pilo_message)
+        log.debug('handle packet in:')
+        log.debug(pilo_packet)
+        self.receiver.handle_packet_in(pilo_packet, handle_pilo_message)
 
     except Exception as e:
       log.debug(e)

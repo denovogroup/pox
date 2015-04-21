@@ -83,23 +83,6 @@ class PiloClient (object):
     self.controller_address = 0
     self.has_controller = False
 
-
-  def broadcast_ovs_message(self, packet):
-    """
-    This function will broadcast the message we've received from ovs.
-    We need to create a PILO header to wrap whatever we've received from OVS
-    """
-    log.debug("sending broadcast packet:")
-
-    pilo_packet = pkt.pilo()
-    pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-    pilo_packet.dst_address  = pkt.packet_utils.mac_string_to_addr(CONTROLLER_MAC)
-    pilo_packet.flags = 0
-    pilo_packet.payload = packet
-
-    self.sender.send(pilo_packet)
-
-
   def _handle_PacketIn (self, event):
     """
     Handles packet in messages from the switch.
@@ -134,6 +117,11 @@ class PiloClient (object):
       log.debug('PILO packet: ' + str(pilo_packet))
 
       dst_mac = EthAddr(pilo_packet.dst_address)
+      src_mac = EthAddr(pilo_packet.src_address)
+
+      if pkt.packet_utils.same_mac(local_mac, src_mac):
+        log.debug('This came from us, so we can ignore')
+        return
 
       if pkt.packet_utils.same_mac(dst_mac, local_mac):
 
@@ -172,7 +160,7 @@ class PiloClient (object):
         log.debug('Message not for us, let\'s flood it back out')
         pilo_packet.ttl = pilo_packet.ttl - 1
         if pilo_packet.ttl > 0:
-          self.broadcast_ovs_message(packet.pack())
+          self.sender.send_pilo_broadcast(pilo_packet)
         else:
           log.debug('TTL expired:')
           log.debug(pilo_packet)
