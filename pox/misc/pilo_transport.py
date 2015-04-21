@@ -51,12 +51,32 @@ class PiloSender(PiloTransport):
     self.udp_port = udp_port
     self.retransmission_timeout = retransmission_timeout
     self.src_address = EthAddr(src_address)
+    self.receivers = []
 
   def send(self, packet):
     log.debug('Sending this pilo packet:')
     log.debug(packet)
-    packet.seq = self.seq_no
-    self.seq_no += len(packet.pack())
+
+    log.debug('Receivers:')
+    log.debug(self.receivers)
+
+    first_msg = True
+
+    # Check if we've sent a packet to this sender
+    for receiver in self.receivers:
+      if pkt.packet_utils.same_mac(receiver['address'], pilo_packet.dst_address):
+        this_reciever = reciever
+        first_msg = False
+
+    if first_msg:
+      this_receiver = {
+        'address': packet.dst_address,
+        'seq_no': 0
+        }
+      self.receivers.append(this_reciever)
+
+    packet.seq = this_receiver['seq_no']
+    this_receiver.seq_no += len(packet.pack())
 
     self.send_pilo_broadcast(packet)
     self.in_transit.append(packet)
@@ -108,6 +128,18 @@ class PiloSender(PiloTransport):
     log.debug(pilo_packet)
 
     self.send(pilo_packet)
+
+  def send_fin(self, dst):
+    pilo_packet = pkt.pilo()
+    pilo_packet.src_address  = self.src_address
+    pilo_packet.dst_address  = pkt.packet_utils.mac_string_to_addr(dst)
+    pilo_packet.FIN = True
+
+    log.debug("sending syn packet:")
+    log.debug(pilo_packet)
+
+    self.send(pilo_packet)
+
 
 
 class PiloReceiver(PiloTransport):
