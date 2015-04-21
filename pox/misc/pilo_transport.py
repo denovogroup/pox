@@ -141,7 +141,7 @@ class PiloReceiver(PiloTransport):
       self.senders.append({
         'address': pilo_packet.src_address,
         'buffer': [],
-        'seq_no': len(pilo_packet.pack())
+        'seq_no': pilo_packet.seq + len(pilo_packet.pack())
         })
       self.send_ack(pilo_packet)
       callback(pilo_packet)
