@@ -120,6 +120,12 @@ class PiloClient (object):
       log.debug('This is a packet from this switch!')
       return
 
+    # Ignore ARP requests because the arp-responder module is doing this
+    a = packet.find('arp')
+    if a:
+      log.debug('This is an ARP request, so pilo_client is gonna ignore it')
+      return
+
     try:
       udp = packet.find('udp')
 
@@ -178,7 +184,7 @@ class PiloClient (object):
       try:
         log.debug('Attempting to get "packet_in"')
         packet_in = event.ofp # The actual ofp_packet_in message.
-        log.debug('packet_in:')
+        # log.debug('packet_in:')
         # log.debug(packet_in)
 
         # We should send this to the controller to see what it would do with it
