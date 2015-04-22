@@ -93,6 +93,13 @@ class PiloController:
     self.sender.send(pilo_packet)
 
 
+  def remove_client(self, address):
+    for controlled in self.controlling:
+      if pkt.packet_utils.same_mac(controlled['mac'], address):
+        log.debug('No longer controlling: ' + str(controlled))
+        self.controlling.remove(controlled)
+
+
   def _handle_PacketIn (self, event):
     """
     Handles packet in messages from the switch.
@@ -138,6 +145,19 @@ class PiloController:
         log.debug('This PILO packet is not destined for us')
         return
 
+      if pilo_packet.FIN and not pilo_packet.ACK:
+        def fin_callback(finack_packet):
+          # We've received an ACK from our FINACK and we should
+          # check and reset our controller stats
+          # finack_packet is the FINACK we sent
+          log.debug('fin_callback')
+          log.debug('finack_packet: ' + str(finack_packet))
+          self.remove_client(finack_packet.dst_address)
+          self.receiver.fin_callback(pilo_packet, finack_packet)
+
+        self.sender.handle_fin(pilo_packet, fin_callback)
+        return
+
       if pilo_packet.ACK:
         if pilo_packet.SYN:
           already_controlling = False
@@ -153,6 +173,14 @@ class PiloController:
                   'mac': EthAddr(pilo_packet.src_address)
                 })
             self.sender.send_synack(pilo_packet)
+
+
+        elif pilo_packet.FIN:
+          def finack_callback(packet):
+            log.debug('finack_packet: ' + str(pilo_packet))
+            self.remove_client(pilo_packet.src_address)
+
+          self.receiver.handle_packet_in(pilo_packet, finack_callback)
 
         self.sender.handle_ack(pilo_packet)
 

@@ -80,8 +80,16 @@ class PiloClient (object):
     # This binds our PacketIn event listener
     connection.addListeners(self)
 
-    self.controller_address = 0
+    self.controller_address = None
     self.has_controller = False
+
+  def remove_controller(self, address):
+    log.debug('self.has_controller = ' + str(self.has_controller))
+    log.debug('self.controller_address = ' + str(self.controller_address))
+    if self.has_controller and pkt.packet_utils.same_mac(address, self.controller_address):
+      log.debug('Removing controller: ' + str(self.controller_address))
+      self.has_controller = False
+      self.controller_address = None
 
   def _handle_PacketIn (self, event):
     """
@@ -126,16 +134,49 @@ class PiloClient (object):
       if pkt.packet_utils.same_mac(dst_mac, local_mac):
 
         log.debug(pilo_packet)
+
+        if pilo_packet.FIN and not pilo_packet.ACK:
+          def fin_callback(finack_packet):
+            # We've received an ACK from our FINACK and we should
+            # check and reset our controller stats
+            # finack_packet is the FINACK we sent
+            log.debug('fin_callback')
+            log.debug('finack_packet: ' + str(finack_packet))
+            self.remove_controller(finack_packet.dst_address)
+            self.receiver.fin_callback(pilo_packet, finack_packet)
+
+          self.sender.handle_fin(pilo_packet, fin_callback)
+          return
+
         if pilo_packet.SYN and pilo_packet.ACK:
-          # This means that we now have a controller
-          self.controller_address = pilo_packet.src_address
-          self.has_controller = True
-          log.debug('We have a PILO controller with address:')
-          log.debug(self.controller_address)
+          # This means that we might have a new controller
+          if self.has_controller and self.controller_address and not pkt.packet_utils.same_mac(self.controller_address, src_mac):
+            # We have a new controller and want to tell the previous controller know the connection is over
+            self.sender.send_fin(self.controller_address)
+
+          if not self.has_controller or not pkt.packet_utils.same_mac(self.controller_address, src_mac):
+            self.controller_address = pilo_packet.src_address
+            self.has_controller = True
+            log.debug('We have a PILO controller with address:')
+            log.debug(self.controller_address)
+
+            def test_fin(packet):
+              log.debug('sending fin')
+              self.sender.send_fin(pilo_packet.src_address)
+
+            core.callDelayed(10, test_fin, pilo_packet)
 
         elif pilo_packet.SYN:
           # This is a controller attempting to establish a connection
           self.sender.send_synack(pilo_packet)
+
+        elif pilo_packet.FIN and pilo_packet.ACK:
+          log.debug('finack_packet: ' + str(pilo_packet))
+          def finack_callback(packet):
+            self.remove_controller(pilo_packet.src_address)
+
+          self.receiver.handle_packet_in(pilo_packet, finack_callback)
+          self.sender.handle_ack(pilo_packet)
 
         elif pilo_packet.ACK:
           # Handle ack reception
@@ -184,6 +225,10 @@ class PiloClient (object):
 
           log.debug('sending pilo ovs query to controller:')
           log.debug(pilo_packet)
+
+          def pilo_packet_received(packet):
+            log.debug('packet was acked by receiver:')
+            log.debug(packet)
 
           self.sender.send(pilo_packet)
 

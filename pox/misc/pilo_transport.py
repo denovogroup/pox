@@ -53,19 +53,18 @@ class PiloSender(PiloTransport):
     self.src_address = EthAddr(src_address)
     self.receivers = []
 
-  def send(self, packet):
+  def send(self, packet, seq_no=None, callback=None):
     log.debug('Sending this pilo packet:')
     log.debug(packet)
-
-    log.debug('Receivers:')
-    log.debug(self.receivers)
+    log.debug('seq_no passed in:')
+    log.debug(seq_no)
 
     first_msg = True
 
     # Check if we've sent a packet to this sender
     for receiver in self.receivers:
-      if pkt.packet_utils.same_mac(receiver['address'], pilo_packet.dst_address):
-        this_reciever = reciever
+      if pkt.packet_utils.same_mac(receiver['address'], packet.dst_address):
+        this_receiver = receiver
         first_msg = False
 
     if first_msg:
@@ -73,19 +72,37 @@ class PiloSender(PiloTransport):
         'address': packet.dst_address,
         'seq_no': 0
         }
-      self.receivers.append(this_reciever)
+      self.receivers.append(this_receiver)
 
-    packet.seq = this_receiver['seq_no']
-    this_receiver.seq_no += len(packet.pack())
+    if seq_no is None:
+      packet.seq = this_receiver['seq_no']
+      this_receiver['seq_no'] += len(packet.pack())
 
     self.send_pilo_broadcast(packet)
     self.in_transit.append(packet)
-    core.callDelayed(self.retransmission_timeout, self.check_acked, packet)
+    core.callDelayed(self.retransmission_timeout, self.check_acked, packet, callback=callback)
 
-  def check_acked(self, pilo_packet):
+  def check_acked(self, pilo_packet, callback=None):
+    log.debug('checking if acked:')
+    log.debug(pilo_packet)
+
+    log.debug('in self.in_transit:')
+    for p in self.in_transit:
+      log.debug(p)
+      log.debug('packet len:' + str(len(p.pack())))
+
     if pilo_packet in self.in_transit:
+      log.debug('is still in transit')
       self.send_pilo_broadcast(pilo_packet)
-      core.callDelayed(self.retransmission_timeout, self.check_acked, pilo_packet)
+      core.callDelayed(self.retransmission_timeout, self.check_acked, pilo_packet, callback=callback)
+
+    else:
+      log.debug('is not still in transit')
+      log.debug('callback:')
+      log.debug(callback)
+      # TODO: This should really be evented, but it's easiest to do it this way for now
+      if callback:
+        callback(pilo_packet)
 
   def handle_ack(self, ack_packet):
     # TODO: Retransmit packet if we've received an out of order ack
@@ -94,12 +111,55 @@ class PiloSender(PiloTransport):
       # if for some reason we get a packet here that isn't an ack, return
       return
 
+    log.debug('Handling ack:')
+    log.debug(ack_packet)
+
+    log.debug('In transit:')
     # TODO: Potentially add some checksum check
     for packet in self.in_transit:
+      log.debug(packet)
       if (ack_packet.seq == packet.seq and
           ack_packet.ack == packet.seq + len(packet.pack())):
 
         self.in_transit.remove(packet)
+
+  def terminate_connection(self, address):
+    for receiver in self.receivers:
+      if pkt.packet_utils.same_mac(receiver['address'], address):
+        self.receivers.remove(receiver)
+        for packet in self.in_transit:
+          if pkt.packet_utils.same_mac(receiver['address'], address):
+            self.in_transit.remove(packet)
+
+  def handle_fin(self, packet, callback):
+    if not packet.FIN:
+      # if for some reason we get a packet here that isn't a fin, return
+      return
+
+    def fin_callback(packet):
+      # We've received a ACK from our FINACK and we can remove from our list of receivers
+      # We also want to clear any in_transit packets
+      # packet is the FINACK that we sent
+      self.terminate_connection(packet.dst_address)
+      callback(packet)
+
+    log.debug('we\'re gonna send the finack here')
+    log.debug('fin = ' + str(packet))
+
+    ack_seq = packet.seq + len(packet.pack())
+    seq_no = packet.seq
+
+    finack_packet = pkt.pilo()
+    finack_packet.src_address  = self.src_address
+    finack_packet.dst_address  = EthAddr(packet.src_address)
+    finack_packet.seq = seq_no
+    finack_packet.ack = ack_seq
+    finack_packet.ACK = True
+    finack_packet.FIN = True
+
+    log.debug('finack = ' + str(finack_packet))
+
+    self.send(finack_packet, seq_no=seq_no, callback=fin_callback)
 
   def send_synack(self, pilo_packet):
     ack_seq = pilo_packet.seq + len(pilo_packet.pack())
@@ -132,13 +192,17 @@ class PiloSender(PiloTransport):
   def send_fin(self, dst):
     pilo_packet = pkt.pilo()
     pilo_packet.src_address  = self.src_address
-    pilo_packet.dst_address  = pkt.packet_utils.mac_string_to_addr(dst)
+    pilo_packet.dst_address  = dst
     pilo_packet.FIN = True
 
-    log.debug("sending syn packet:")
+    log.debug("sending FIN packet:")
     log.debug(pilo_packet)
 
-    self.send(pilo_packet)
+    def handle_finack(finack_packet):
+      log.debug('received FINACK')
+      self.terminate_connection(finack_packet.dst_address)
+
+    self.send(pilo_packet, callback=handle_finack)
 
 
 
@@ -179,9 +243,17 @@ class PiloReceiver(PiloTransport):
       callback(pilo_packet)
       return
 
+    elif pilo_packet.FIN:
+      # This is hackish
+      self.send_ack(pilo_packet)
+      callback(pilo_packet)
+
     else:
       # If we have received a packet from this sender
       # check if this matches sender's seq_no
+      log.debug('this_sender:')
+      log.debug(this_sender)
+
       if this_sender['seq_no'] == pilo_packet.seq:
         # If this packet matches the sender's seq_no
         # send ack for this packet
@@ -198,11 +270,33 @@ class PiloReceiver(PiloTransport):
 
       else:
         # If this packet does not match the sender's seq no
-        # add this packet to their buffer
-        this_sender['buffer'].append({
-          'packet': pilo_packet,
-          'callback': callback
-          })
+        # add this packet to their buffer if it's not below current seq no
+        already_buffered = False
+        for buffered in this_sender['buffer']:
+          if buffered['packet'] == pilo_packet:
+            already_buffered = True
+
+        if pilo_packet.seq > this_sender['seq_no'] and not already_buffered:
+          this_sender['buffer'].append({
+            'packet': pilo_packet,
+            'callback': callback
+            })
+
+  def fin_callback(self, sent_fin, received_ack):
+    log.debug('inside fin_callback')
+    log.debug('sent_fin: ' + str(sent_fin))
+    log.debug('received_ack: ' + str(received_ack))
+
+    assert sent_fin.FIN
+    assert received_ack.ACK
+
+    assert sent_fin.src_address == received_ack.dst_address
+    assert sent_fin.dst_address == received_ack.src_address
+
+    # Remove this sender from senders
+    for sender in self.senders:
+      if pkt.packet_utils.same_mac(sender['address'], sent_finack.dst_address):
+        self.senders.remove(sender)
 
 
   def send_ack(self, pilo_packet):

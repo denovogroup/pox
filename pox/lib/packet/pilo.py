@@ -28,9 +28,9 @@
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 #  |                    Acknowledgment Number                      |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |A|S|                           |                               |
-#  |C|Y|                           |              TTL              |
-#  |K|N|                           |                               |
+#  |A|S|F|                         |                               |
+#  |C|Y|I|                         |              TTL              |
+#  |K|N|N|                         |                               |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 #  |                             data                              |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -60,10 +60,11 @@ class pilo(packet_base):
 
     MIN_LEN = 24
 
-    TTL_INIT = 64 # Probably want to better test this?
+    TTL_INIT = 64 # TODO:Probably want to better test this?
 
     ACK_flag = 0x01
     SYN_flag = 0x02
+    FIN_flag = 0x04
 
     @property
     def ACK (self): return True if self.flags & self.ACK_flag else False
@@ -71,11 +72,17 @@ class pilo(packet_base):
     @property
     def SYN (self): return True if self.flags & self.SYN_flag else False
 
+    @property
+    def FIN (self): return True if self.flags & self.FIN_flag else False
+
     @ACK.setter
     def ACK (self, value): self._setflag(self.ACK_flag, value)
 
     @SYN.setter
     def SYN (self, value): self._setflag(self.SYN_flag, value)
+
+    @FIN.setter
+    def FIN (self, value): self._setflag(self.FIN_flag, value)
 
     def _setflag (self, flag, value):
       self.flags = (self.flags & ~flag) | (flag if value else 0)
@@ -102,6 +109,7 @@ class pilo(packet_base):
         f = ''
         if self.ACK: f += 'A'
         if self.SYN: f += 'S'
+        if self.FIN: f += 'F'
 
         s = '[PILO %s>%s seq:%s ack:%s f:%s ttl:%s]' % (self.src_address,
             self.dst_address, self.seq, self.ack, f, self.ttl)
