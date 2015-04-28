@@ -118,7 +118,8 @@ class PiloSender(PiloTransport):
     # TODO: Potentially add some checksum check
     for packet in self.in_transit:
       log.debug(packet)
-      if (ack_packet.seq == packet.seq and
+      if (pkt.packet_utils.same_mac(ack_packet.src_address, packet.dst_address) and
+          ack_packet.seq == packet.seq and
           ack_packet.ack == packet.seq + len(packet.pack())):
 
         self.in_transit.remove(packet)
