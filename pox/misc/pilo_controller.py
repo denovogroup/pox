@@ -62,7 +62,7 @@ class PiloController:
     normal_msg_flow.match.dl_src = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
     normal_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
     normal_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
-    normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_NORMAL))
+    normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_ALL))
 
     self.connection.send(normal_msg_flow)
 
