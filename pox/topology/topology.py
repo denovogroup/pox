@@ -145,6 +145,7 @@ class Host (Entity):
   """
   def __init__(self,id=None):
     Entity.__init__(self, id)
+    self.ports = {}
 
 class Switch (Entity):
   """
