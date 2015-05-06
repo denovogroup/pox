@@ -20,7 +20,7 @@ This component will implement the PILO (physically in band logically out of band
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
-from pox.pilo.pilo_transport import PiloSender, PiloReceiver
+from pox.pilo.pilo_transport import PiloTransport
 from pox.pilo.pilo_connection import PiloConnection
 from pox.lib.revent import EventHalt
 from pox.lib.recoco import Timer
@@ -168,9 +168,6 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
     new_connection = event.connection
     if isinstance(new_connection, PiloConnection):
       return
-
-    sender = PiloSender(UDP_IP, UDP_PORT, int(retransmission_timeout), src_address)
-    receiver = PiloReceiver(src_ip, UDP_IP, UDP_PORT)
 
     log.debug("Controlling %s" % (event.connection,))
     PiloController(event.connection, client_macs, sender, receiver)

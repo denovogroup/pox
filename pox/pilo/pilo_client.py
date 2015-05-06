@@ -20,7 +20,7 @@ This component will implement the PILO (physically in band logically out of band
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
-from pox.pilo.pilo_transport import PiloSender, PiloReceiver
+from pox.pilo.pilo_transport import PiloTransport
 
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from twisted.internet.protocol import DatagramProtocol
