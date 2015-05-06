@@ -21,7 +21,8 @@ from pox.core import core
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
 from pox.pilo.pilo_transport import PiloSender, PiloReceiver
-
+from pox.pilo.pilo_connection import PiloConnection
+from pox.lib.revent import EventHalt
 from pox.lib.recoco import Timer
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from lib.util import get_hw_addr, get_ip_address
@@ -30,11 +31,12 @@ import json
 
 log = core.getLogger()
 
-class PiloController:
+class PiloController (EventMixin):
+  _eventMixin_events = set([PiloPacketIn])
   """
   A PiloController object will be created once at the startup of POX
   """
-  def __init__ (self, connection, client_macs, sender, receiver):
+  def __init__ (self, connection, client_macs, transport):
 
     self.connection = connection
     self.unacked = []
@@ -43,7 +45,7 @@ class PiloController:
     self.receiver = receiver
 
     for client_mac in client_macs:
-      self.sender.send_syn(client_mac)
+      self.transport.initiate_connection(client_mac)
 
     # Creates an open flow rule which should send PILO broadcast messages
     # to our handler
@@ -74,24 +76,8 @@ class PiloController:
 
     self.connection.send(table_miss_msg_flow)
 
-
     # This binds our PacketIn event listener
     connection.addListeners(self)
-
-
-  def send_control_msg(self, client, msg):
-    # Takes an of message and sends it to client via PILO
-
-    pilo_packet = pkt.pilo()
-    pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-    pilo_packet.dst_address  = client['mac']
-    pilo_packet.payload = msg.pack()
-
-    log.debug("sending broadcast packet:")
-    log.debug(pilo_packet)
-
-    self.sender.send(pilo_packet)
-
 
   def remove_client(self, address):
     for controlled in self.controlling:
@@ -99,22 +85,38 @@ class PiloController:
         log.debug('No longer controlling: ' + str(controlled))
         self.controlling.remove(controlled)
 
+  def _handle_PiloConnectionDown (self, event):
+    client_address = event.dst_address
+    self.remove_client(client_address)
+
+  def _handle_PiloConnectionUp (self, event):
+    client_address = event.dst_address
+    already_controlling = False
+    for controlled in self.controlling:
+      if pkt.packet_utils.same_mac(controlled['mac'], client_address):
+        already_controlling = True
+
+    if not already_controlling:
+      # This means that we've established a connection with the client
+      log.debug('Controlling: ' + str(client_address))
+      newcon = PiloConnection(self.connection.sock, client_address, self.transport)
+      self.controlling.append({
+            'mac': EthAddr(client_address)
+          })
 
   def _handle_PacketIn (self, event):
     """
     Handles packet in messages from the switch.
     """
-
-    broadcast_in = event.parsed # This is the parsed packet data.
-
-    if not broadcast_in.parsed:
+    packet = event.parsed # This is the parsed packet data.
+    if not packet.parsed:
       log.warning("Ignoring incomplete packet")
       return
 
     log.debug("handle packet in: ")
-    log.debug(broadcast_in)
+    log.debug(packet)
 
-    eth = broadcast_in.find('ethernet')
+    eth = packet.find('ethernet')
     local_mac = EthAddr(get_hw_addr(THIS_IF))
 
     if pkt.packet_utils.same_mac(eth.src, local_mac):
@@ -122,106 +124,26 @@ class PiloController:
       return
 
     # Ignore ARP requests because the arp-responder module is doing this
-    a = broadcast_in.find('arp')
+    a = packet.find('arp')
     if a:
       log.debug('This is an ARP request, so pilo_controller is gonna ignore it')
       return
 
     try:
-      udp = broadcast_in.find('udp')
+      udp = packet.find('udp')
 
       pilo_packet = pkt.pilo(udp.payload)
 
       log.debug('PILO packet: ' + str(pilo_packet))
-
-      dst_mac = EthAddr(pilo_packet.dst_address)
-      src_mac = EthAddr(pilo_packet.src_address)
-
-      if pkt.packet_utils.same_mac(local_mac, src_mac):
-        log.debug('This came from us, so we can ignore')
-        return
-
-      if not pkt.packet_utils.same_mac(dst_mac, local_mac):
-        log.debug('This PILO packet is not destined for us')
-        return
-
-      if pilo_packet.FIN and not pilo_packet.ACK:
-        def fin_callback(finack_packet):
-          # We've received an ACK from our FINACK and we should
-          # check and reset our controller stats
-          # finack_packet is the FINACK we sent
-          log.debug('fin_callback')
-          log.debug('finack_packet: ' + str(finack_packet))
-          self.remove_client(finack_packet.dst_address)
-          self.receiver.fin_callback(pilo_packet, finack_packet)
-
-        self.sender.handle_fin(pilo_packet, fin_callback)
-        return
-
-      if pilo_packet.ACK:
-        if pilo_packet.SYN:
-          already_controlling = False
-          for controlled in self.controlling:
-            if pkt.packet_utils.same_mac(controlled['mac'], pilo_packet.src_address):
-              already_controlling = True
-
-          if not already_controlling:
-            # This means that we've established a connection with the client
-            log.debug('Controlling: ' + str(pilo_packet.src_address))
-            self.controlling.append({
-                  'mac_to_port': {},
-                  'mac': EthAddr(pilo_packet.src_address)
-                })
-            self.sender.send_synack(pilo_packet)
-
-
-        elif pilo_packet.FIN:
-          def finack_callback(packet):
-            log.debug('finack_packet: ' + str(pilo_packet))
-            self.remove_client(pilo_packet.src_address)
-
-          self.receiver.handle_packet_in(pilo_packet, finack_callback)
-
-        self.sender.handle_ack(pilo_packet)
-
-      else:
-        # This is an OVS PILO query - we *should* be able to handle it like a normal packet_in
-        log.debug(pilo_packet)
-
-        def handle_pilo_message(pilo_packet):
-          try:
-            inner_packet = of.ofp_packet_in()
-            log.debug('attempting to unpack payload from:')
-            log.debug(pilo_packet)
-            inner_packet.unpack(pilo_packet.payload)
-            log.debug('ofp_packet_in packet:')
-            # log.debug(inner_packet)
-            ethernet_packet = pkt.ethernet(inner_packet.data)
-            log.debug('ethernet packet:')
-            log.debug(ethernet_packet)
-
-            for client in self.controlling:
-              if pilo_packet.src_address == client['mac']:
-                log.debug('This PILO packet matches our client:')
-                log.debug(client)
-                pilo_client = client
-
-                # TODO: This is where we would send back OF messages to switch
-
-          except Exception:
-            log.debug(traceback.format_exc())
-
-        log.debug('handle packet in:')
-        log.debug(pilo_packet)
-        self.receiver.handle_packet_in(pilo_packet, handle_pilo_message)
+      self.raiseEvent(PiloPacketIn, pilo_packet)
 
     except Exception as e:
       log.debug(e)
-      log.debug('Can\'t parse as PILO packet')
-      return
+      log.debug('Can\'t parse as PILO:')
+      log.debug(packet)
 
 
-def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5"):
+def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", heartbeat_interval="10"):
   """
   Starts the pilo_controller component
   """
@@ -240,15 +162,19 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5"):
   src_address = get_hw_addr(THIS_IF)
   client_macs = client_macs.split(',')
 
-  sender = PiloSender(UDP_IP, UDP_PORT, int(retransmission_timeout), src_address)
-  receiver = PiloReceiver(src_ip, UDP_IP, UDP_PORT)
+  pilo_transport = PiloTransport(self, UDP_IP, UDP_PORT, src_ip, src_address, int(retransmission_timeout), int(hearteat_interval))
 
   def start_switch (event):
+    new_connection = event.connection
+    if isinstance(new_connection, PiloConnection):
+      return
+
     sender = PiloSender(UDP_IP, UDP_PORT, int(retransmission_timeout), src_address)
     receiver = PiloReceiver(src_ip, UDP_IP, UDP_PORT)
 
     log.debug("Controlling %s" % (event.connection,))
     PiloController(event.connection, client_macs, sender, receiver)
+    return EventHalt
 
-  core.openflow.addListenerByName("ConnectionUp", start_switch)
+  core.openflow.addListenerByName("ConnectionUp", start_switch, priority=9) # Arbitrary priority needs to be >0
 

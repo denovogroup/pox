@@ -32,20 +32,17 @@ from lib.util import get_hw_addr
 
 log = core.getLogger()
 
-"""
-Traditional POX code
-"""
 
-class PiloClient (object):
+class PiloClient (EventMixin):
+  _eventMixin_events = set([PiloPacketIn])
   """
   A Pilo object is created for each switch that connects.
   A Connection object for that switch is passed to the __init__ function.
   """
-  def __init__ (self, connection, sender, receiver):
+  def __init__ (self, connection, transport):
 
     self.connection = connection
-    self.sender = sender
-    self.receiver = receiver
+    self.transport = transport
 
     # Creates an open flow rule which should send PILO broadcast messages
     # to our handler
@@ -76,9 +73,8 @@ class PiloClient (object):
 
     self.connection.send(table_miss_msg_flow)
 
-
-    # This binds our PacketIn event listener
     connection.addListeners(self)
+    transport.addListeners(self)
 
     self.controller_address = None
     self.has_controller = False
@@ -90,6 +86,67 @@ class PiloClient (object):
       log.debug('Removing controller: ' + str(self.controller_address))
       self.has_controller = False
       self.controller_address = None
+
+  def _handle_PiloConnectionUp (self, event):
+    controller_address = event.dst_address
+    # This means that we might have a new controller
+    if self.has_controller and self.controller_address and not pkt.packet_utils.same_mac(self.controller_address, controller_address):
+      # We have a new controller and want to tell the previous controller know the connection is over
+      self.transport.terminate_connection(self.controller_address)
+
+    if not self.has_controller or not pkt.packet_utils.same_mac(self.controller_address, src_mac):
+      self.controller_address = controller_address
+      self.has_controller = True
+      log.debug('We have a PILO controller with address:')
+      log.debug(self.controller_address)
+
+  def _handle_PiloConnectionDown (self, event):
+    controller_address = event.dst_address
+    self.remove_controller(controller_address)
+
+
+  # We're going to need a handler for each of the connection events that we want to pass
+  # to the PILO Controller:
+  # handle_PACKET_IN,
+  # handle_FEATURES_REPLY,
+  # handle_PORT_STATUS,
+  # handle_ERROR_MSG,
+  # handle_BARRIER,
+  # handle_STATS_REPLY,
+  # handle_FLOW_REMOVED,
+  # handle_VENDOR
+  # These will never get raised to here:
+  # handle_HELLO,
+  # handle_ECHO_REQUEST,
+  # handle_ECHO_REPLY,
+  # see of_01.py lines 66-240 - all of these messages get handled there,
+  # and all but the last three then get essentially re-raised on the connection EventMixin
+
+
+  def _handle_FeaturesReceived (self, event):
+    """
+    Part of the inital non-pilo connection is a features request msg and then response from
+    the client, so we "proxy" that message back to the controller here
+    """
+    self.proxy_message(event)
+
+  def proxy_message (self, event):
+    """
+    Most of our _handle_ listeners are just going to proxy whatever message we get from the switch
+    that we want to send to our controller so this can be a common function
+    This is not appropriate for something like PacketIn, because those messages can be generated from
+    actions that the switch itself takes
+    """
+    if self.has_controller and self.controller_address:
+      log.debug('sending proxied OF message to controller:')
+      log.debug(pilo_packet)
+
+      self.transport.send(msg=event.ofp.pack(), dst_address=self.controller_address)
+
+  def _handle_PiloDataIn (self, event):
+    # This sends the PILO msg to our OVS instance
+    msg = event.msg
+    self.connection.send(msg)
 
   def _handle_PacketIn (self, event):
     """
@@ -123,119 +180,26 @@ class PiloClient (object):
       pilo_packet = pkt.pilo(udp.payload)
 
       log.debug('PILO packet: ' + str(pilo_packet))
-
-      dst_mac = EthAddr(pilo_packet.dst_address)
-      src_mac = EthAddr(pilo_packet.src_address)
-
-      if pkt.packet_utils.same_mac(local_mac, src_mac):
-        log.debug('This came from us, so we can ignore')
-        return
-
-      if pkt.packet_utils.same_mac(dst_mac, local_mac):
-
-        log.debug(pilo_packet)
-
-        if pilo_packet.FIN and not pilo_packet.ACK:
-          def fin_callback(finack_packet):
-            # We've received an ACK from our FINACK and we should
-            # check and reset our controller stats
-            # finack_packet is the FINACK we sent
-            log.debug('fin_callback')
-            log.debug('finack_packet: ' + str(finack_packet))
-            self.remove_controller(finack_packet.dst_address)
-            self.receiver.fin_callback(pilo_packet, finack_packet)
-
-          self.sender.handle_fin(pilo_packet, fin_callback)
-          return
-
-        if pilo_packet.SYN and pilo_packet.ACK:
-          # This means that we might have a new controller
-          if self.has_controller and self.controller_address and not pkt.packet_utils.same_mac(self.controller_address, src_mac):
-            # We have a new controller and want to tell the previous controller know the connection is over
-            self.sender.send_fin(self.controller_address)
-
-          if not self.has_controller or not pkt.packet_utils.same_mac(self.controller_address, src_mac):
-            self.controller_address = pilo_packet.src_address
-            self.has_controller = True
-            log.debug('We have a PILO controller with address:')
-            log.debug(self.controller_address)
-
-            def test_fin(packet):
-              log.debug('sending fin')
-              self.sender.send_fin(pilo_packet.src_address)
-
-            # core.callDelayed(10, test_fin, pilo_packet)
-
-        elif pilo_packet.SYN:
-          # This is a controller attempting to establish a connection
-          self.sender.send_synack(pilo_packet)
-
-        elif pilo_packet.FIN and pilo_packet.ACK:
-          log.debug('finack_packet: ' + str(pilo_packet))
-          def finack_callback(packet):
-            self.remove_controller(pilo_packet.src_address)
-
-          self.receiver.handle_packet_in(pilo_packet, finack_callback)
-          self.sender.handle_ack(pilo_packet)
-
-        elif pilo_packet.ACK:
-          # Handle ack reception
-          self.sender.handle_ack(pilo_packet)
-
-        elif self.has_controller and pkt.packet_utils.same_mac(pilo_packet.src_address, self.controller_address):
-
-          # This sends the openflow rule to our OVS instance
-          def of_to_ovs(pilo_packet):
-            of_packet_raw = pilo_packet.payload
-            self.connection.send(of_packet_raw)
-
-
-          # Now we want to send/broadcast an ack
-          self.receiver.handle_packet_in(pilo_packet, of_to_ovs)
-
-        else:
-          log.debug('This looks like an OF message that hasn\'t come from our controller:')
-          log.debug(pilo_packet)
-
-      else:
-        log.debug('Message not for us, let\'s flood it back out')
-        pilo_packet.ttl = pilo_packet.ttl - 1
-        if pilo_packet.ttl > 0:
-          self.sender.send_pilo_broadcast(pilo_packet)
-        else:
-          log.debug('TTL expired:')
-          log.debug(pilo_packet)
+      self.raiseEvent(PiloPacketIn, pilo_packet)
 
     except Exception as e:
       log.debug(e)
-      log.debug('Can\'t parse PILO packet - this is a packet that ovs doesn\'t know what to do with')
+      log.debug('Can\'t parse PILO packet - this might be a table miss packet')
 
       try:
         log.debug('Attempting to get "packet_in"')
-        packet_in = event.ofp # The actual ofp_packet_in message.
-        # log.debug('packet_in:')
-        # log.debug(packet_in)
+        packet_in = event.ofp # The actual openflow packet
 
         # We should send this to the controller to see what it would do with it
         if self.has_controller:
-          pilo_packet = pkt.pilo()
-          pilo_packet.src_address  = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-          pilo_packet.dst_address  = EthAddr(self.controller_address)
-          pilo_packet.payload = packet_in.pack()
-
           log.debug('sending pilo ovs query to controller:')
           log.debug(pilo_packet)
-
-          def pilo_packet_received(packet):
-            log.debug('packet was acked by receiver:')
-            log.debug(packet)
-
-          self.sender.send(pilo_packet)
+          self.transport.send(self.controller_address, packet_in.pack())
 
       except Exception as e:
         log.debug(e)
 
-def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5"):
+def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5", heartbeat_interval="10"):
   """
   Starts the component
   """
@@ -253,11 +217,10 @@ def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5
   src_address = get_hw_addr(THIS_IF)
 
   def start_switch (event):
-    sender = PiloSender(UDP_IP, UDP_PORT, int(retransmission_timeout), src_address)
-    receiver = PiloReceiver(src_ip, UDP_IP, UDP_PORT)
+    pilo_transport = PiloTransport(self, UDP_IP, UDP_PORT, src_ip, src_address, int(retransmission_timeout), int(hearteat_interval))
 
     log.debug("Controlling %s" % (event.connection,))
-    PiloClient(event.connection, sender, receiver)
+    PiloClient(event.connection, pilo_transport)
 
   core.openflow.addListenerByName("ConnectionUp", start_switch)
 
