@@ -214,6 +214,7 @@ class PiloTransportConnection (EventMixin):
     self.transport = transport
     self.connected = connected
     self.initiating = initiating
+    self.ack_timers = []
     self.in_transit = []
     self.rx_buffer = []
     self.most_recent_rx = None
@@ -252,6 +253,7 @@ class PiloTransportConnection (EventMixin):
   def close (self, callback=None):
     def _fin_callback ():
       self.transport.raiseEvent(PiloConnectionDown, self)
+      self.cleanup()
       if callback:
         callback()
 
@@ -447,7 +449,7 @@ class PiloTransportConnection (EventMixin):
       'packet':packet,
       'callback': callback
       })
-    core.callDelayed(self.config.retransmission_timeout, self.check_acked, packet)
+    self.ack_timers.append(Timer(self.config.retransmission_timeout, self.check_acked, args=[packet]))
 
   def check_acked(self, pilo_packet):
     log.debug('checking if acked:')
@@ -467,7 +469,7 @@ class PiloTransportConnection (EventMixin):
     if still_in_transit:
       log.debug('is still in transit')
       send_pilo_broadcast(self.config, pilo_packet)
-      core.callDelayed(self.config.retransmission_timeout, self.check_acked, pilo_packet)
+      self.ack_timers.append(Timer(self.config.retransmission_timeout, self.check_acked, args=[pilo_packet]))
 
     else:
       log.debug('is not still in transit')
@@ -486,5 +488,12 @@ class PiloTransportConnection (EventMixin):
     # No need to do any FIN/FINACK I think...
     self.connected = False
     self.transport.raiseEvent(PiloConnectionDown, self)
+    self.cleanup()
+
+  def cleanup (self):
+    self.heartbeat_timer.cancel()
+    self.expiration_timer.cancel()
+    for ack_timer in self.ack_timers:
+      ack_timer.cancel()
 
 
