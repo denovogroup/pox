@@ -20,8 +20,8 @@ This component will implement the PILO (physically in band logically out of band
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
-from pox.pilo.pilo_transport import PiloTransport
-
+from pox.pilo.pilo_transport import PiloTransport, PiloPacketIn
+from pox.lib.revent.revent import EventMixin
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from twisted.internet.protocol import DatagramProtocol
 from twisted.internet import reactor
@@ -29,6 +29,7 @@ from threading import Thread
 import socket, struct
 import traceback
 from lib.util import get_hw_addr
+import binascii
 
 log = core.getLogger()
 
@@ -39,10 +40,11 @@ class PiloClient (EventMixin):
   A Pilo object is created for each switch that connects.
   A Connection object for that switch is passed to the __init__ function.
   """
-  def __init__ (self, connection, transport):
+  def __init__ (self, connection):
 
     self.connection = connection
-    self.transport = transport
+
+    self.transport = PiloTransport(self, UDP_IP, UDP_PORT, SRC_IP, SRC_ADDRESS, RETRANSMISSION_TIMEOUT, HEARTBEAT_INTERVAL)
 
     # Creates an open flow rule which should send PILO broadcast messages
     # to our handler
@@ -73,8 +75,10 @@ class PiloClient (EventMixin):
 
     self.connection.send(table_miss_msg_flow)
 
-    connection.addListeners(self)
-    transport.addListeners(self)
+    self.connection.addListeners(self)
+    self.transport.addListeners(self)
+    # TODO: Why don't the connection listeners work for features received?
+    core.openflow.addListeners(self)
 
     self.controller_address = None
     self.has_controller = False
@@ -88,17 +92,20 @@ class PiloClient (EventMixin):
       self.controller_address = None
 
   def _handle_PiloConnectionUp (self, event):
-    controller_address = event.dst_address
+    controller_address = event.connection.dst_address
     # This means that we might have a new controller
     if self.has_controller and self.controller_address and not pkt.packet_utils.same_mac(self.controller_address, controller_address):
       # We have a new controller and want to tell the previous controller know the connection is over
       self.transport.terminate_connection(self.controller_address)
 
-    if not self.has_controller or not pkt.packet_utils.same_mac(self.controller_address, src_mac):
+    if not self.has_controller or not pkt.packet_utils.same_mac(self.controller_address, SRC_ADDRESS):
       self.controller_address = controller_address
       self.has_controller = True
       log.debug('We have a PILO controller with address:')
       log.debug(self.controller_address)
+
+      self.pilo_connection = event.connection
+      self.pilo_connection.addListeners(self)
 
   def _handle_PiloConnectionDown (self, event):
     controller_address = event.dst_address
@@ -107,14 +114,19 @@ class PiloClient (EventMixin):
 
   # We're going to need a handler for each of the connection events that we want to pass
   # to the PILO Controller:
-  # handle_PACKET_IN,
-  # handle_FEATURES_REPLY,
-  # handle_PORT_STATUS,
-  # handle_ERROR_MSG,
-  # handle_BARRIER,
-  # handle_STATS_REPLY,
-  # handle_FLOW_REMOVED,
-  # handle_VENDOR
+    # PortStatus,
+    # FlowRemoved,
+    # PacketIn,
+    # ErrorIn,
+    # BarrierIn,
+    # RawStatsReply,
+    # SwitchDescReceived,
+    # FlowStatsReceived,
+    # AggregateFlowStatsReceived,
+    # TableStatsReceived,
+    # PortStatsReceived,
+    # QueueStatsReceived,
+    # FlowRemoved,
   # These will never get raised to here:
   # handle_HELLO,
   # handle_ECHO_REQUEST,
@@ -128,6 +140,47 @@ class PiloClient (EventMixin):
     Part of the inital non-pilo connection is a features request msg and then response from
     the client, so we "proxy" that message back to the controller here
     """
+    log.debug('-- _handle_FeaturesReceived --')
+    self.proxy_message(event)
+
+  def _handle_BarrierIn (self, event):
+    log.debug('-- _handle_BarrierIn --')
+    self.proxy_message(event)
+
+  def _handle_ErrorIn (self, event):
+    log.debug('-- _handle_ErrorIn --')
+    self.proxy_message(event)
+
+  def _handle_RawStatsReply (self, event):
+    log.debug('-- _handle_RawStatsReply  --')
+    self.proxy_message(event)
+
+  def _handle_SwitchDescReceived (self, event):
+    log.debug('-- _handle_SwitchDescReceived  --')
+    self.proxy_message(event)
+
+  def _handle_FlowStatsReceived (self, event):
+    log.debug('-- _handle_FlowStatsReceived  --')
+    self.proxy_message(event)
+
+  def _handle_AggregateFlowStatsReceived (self, event):
+    log.debug('-- _handle_AggregateFlowStatsReceived  --')
+    self.proxy_message(event)
+
+  def _handle_TableStatsReceived (self, event):
+    log.debug('-- _handle_TableStatsReceived  --')
+    self.proxy_message(event)
+
+  def _handle_PortStatsReceived (self, event):
+    log.debug('-- _handle_PortStatsReceived  --')
+    self.proxy_message(event)
+
+  def _handle_QueueStatsReceived (self, event):
+    log.debug('-- _handle_QueueStatsReceived  --')
+    self.proxy_message(event)
+
+  def _handle_FlowRemoved (self, event):
+    log.debug('-- _handle_FlowRemoved  --')
     self.proxy_message(event)
 
   def proxy_message (self, event):
@@ -138,15 +191,19 @@ class PiloClient (EventMixin):
     actions that the switch itself takes
     """
     if self.has_controller and self.controller_address:
-      log.debug('sending proxied OF message to controller:')
-      log.debug(pilo_packet)
+      log.debug('sending proxied OFP message to controller:')
+      # log.debug(event.ofp)
 
-      self.transport.send(msg=event.ofp.pack(), dst_address=self.controller_address)
+      if self.pilo_connection:
+        self.pilo_connection.send(msg=event.ofp.pack())
 
   def _handle_PiloDataIn (self, event):
     # This sends the PILO msg to our OVS instance
     msg = event.msg
-    self.connection.send(msg)
+    log.debug('handle pilo data in. msg = ')
+    log.debug(binascii.hexlify(msg))
+    if self.connection:
+      self.connection.send(msg)
 
   def _handle_PacketIn (self, event):
     """
@@ -162,9 +219,8 @@ class PiloClient (EventMixin):
     log.debug(packet)
 
     eth = packet.find('ethernet')
-    local_mac = EthAddr(get_hw_addr(THIS_IF))
 
-    if pkt.packet_utils.same_mac(eth.src, local_mac):
+    if pkt.packet_utils.same_mac(eth.src, SRC_ADDRESS):
       log.debug('This is a packet from this switch!')
       return
 
@@ -183,6 +239,8 @@ class PiloClient (EventMixin):
       self.raiseEvent(PiloPacketIn, pilo_packet)
 
     except Exception as e:
+      log.debug('Exception:')
+      traceback.print_exc()
       log.debug(e)
       log.debug('Can\'t parse PILO packet - this might be a table miss packet')
 
@@ -193,13 +251,15 @@ class PiloClient (EventMixin):
         # We should send this to the controller to see what it would do with it
         if self.has_controller:
           log.debug('sending pilo ovs query to controller:')
-          log.debug(pilo_packet)
-          self.transport.send(self.controller_address, packet_in.pack())
+          # log.debug(packet_in)
+          self.pilo_connection.send(msg=packet_in.pack())
 
       except Exception as e:
+        log.debug('Exception:')
+        traceback.print_exc()
         log.debug(e)
 
-def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5", heartbeat_interval="10"):
+def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5", heartbeat_interval="30"):
   """
   Starts the component
   """
@@ -208,19 +268,24 @@ def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5
   global THIS_IF
   global UDP_PORT
   global CONTROLLER_MAC
+  global SRC_ADDRESS
+  global RETRANSMISSION_TIMEOUT
+  global HEARTBEAT_INTERVAL
+  global SRC_IP
 
   UDP_IP = udp_ip
   THIS_IF = this_if
   UDP_PORT = int(udp_port)
   CONTROLLER_MAC = controller_mac
-  src_ip = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-  src_address = get_hw_addr(THIS_IF)
+  SRC_IP = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+  SRC_ADDRESS = get_hw_addr(THIS_IF)
+  HEARTBEAT_INTERVAL = int(heartbeat_interval)
+  RETRANSMISSION_TIMEOUT = int(retransmission_timeout)
 
   def start_switch (event):
-    pilo_transport = PiloTransport(self, UDP_IP, UDP_PORT, src_ip, src_address, int(retransmission_timeout), int(hearteat_interval))
 
     log.debug("Controlling %s" % (event.connection,))
-    PiloClient(event.connection, pilo_transport)
+    PiloClient(event.connection)
 
   core.openflow.addListenerByName("ConnectionUp", start_switch)
 

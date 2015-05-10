@@ -20,14 +20,16 @@ This component will implement the PILO (physically in band logically out of band
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
-from pox.pilo.pilo_transport import PiloTransport
+from pox.pilo.pilo_transport import PiloTransport, PiloPacketIn
 from pox.pilo.pilo_connection import PiloConnection
+from pox.lib.revent.revent import EventMixin
 from pox.lib.revent import EventHalt
 from pox.lib.recoco import Timer
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from lib.util import get_hw_addr, get_ip_address
 import traceback
 import json
+import binascii
 
 log = core.getLogger()
 
@@ -36,13 +38,13 @@ class PiloController (EventMixin):
   """
   A PiloController object will be created once at the startup of POX
   """
-  def __init__ (self, connection, client_macs, transport):
+  def __init__ (self, connection, client_macs):
 
     self.connection = connection
     self.unacked = []
     self.controlling = []
-    self.sender = sender
-    self.receiver = receiver
+
+    self.transport = PiloTransport(self, UDP_IP, UDP_PORT, SRC_IP, SRC_ADDRESS, RETRANSMISSION_TIMEOUT, HEARTBEAT_INTERVAL)
 
     for client_mac in client_macs:
       self.transport.initiate_connection(client_mac)
@@ -76,8 +78,8 @@ class PiloController (EventMixin):
 
     self.connection.send(table_miss_msg_flow)
 
-    # This binds our PacketIn event listener
     connection.addListeners(self)
+    self.transport.addListeners(self)
 
   def remove_client(self, address):
     for controlled in self.controlling:
@@ -85,12 +87,22 @@ class PiloController (EventMixin):
         log.debug('No longer controlling: ' + str(controlled))
         self.controlling.remove(controlled)
 
+  def _handle_ConnectionDown (self, event):
+    """
+    This was happening when we were getting socket errors attempting to
+    talk to the pilo controller ovs instance
+    TODO: is this the appropriate place to deal with it?
+    """
+    for controlled in self.controlling:
+      self.transport.terminate_connection(controlled['mac'])
+
   def _handle_PiloConnectionDown (self, event):
     client_address = event.dst_address
     self.remove_client(client_address)
 
   def _handle_PiloConnectionUp (self, event):
-    client_address = event.dst_address
+    log.debug('_handle_PiloConnectionUp: ' + str(event.dst_address))
+    client_address = event.connection.dst_address
     already_controlling = False
     for controlled in self.controlling:
       if pkt.packet_utils.same_mac(controlled['mac'], client_address):
@@ -99,10 +111,13 @@ class PiloController (EventMixin):
     if not already_controlling:
       # This means that we've established a connection with the client
       log.debug('Controlling: ' + str(client_address))
-      newcon = PiloConnection(self.connection.sock, client_address, self.transport)
+      newcon = PiloConnection(self.connection.sock, event.connection)
       self.controlling.append({
             'mac': EthAddr(client_address)
           })
+
+      self.pilo_connection = event.connection
+      self.pilo_connection.addListeners(self)
 
   def _handle_PacketIn (self, event):
     """
@@ -143,7 +158,7 @@ class PiloController (EventMixin):
       log.debug(packet)
 
 
-def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", heartbeat_interval="10"):
+def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", heartbeat_interval="30"):
   """
   Starts the pilo_controller component
   """
@@ -153,16 +168,21 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
   global THIS_IF
   global THIS_IP
   global controller
+  global RETRANSMISSION_TIMEOUT
+  global HEARTBEAT_INTERVAL
+  global SRC_IP
+  global SRC_ADDRESS
 
   UDP_IP = udp_ip
   UDP_PORT = int(udp_port)
   THIS_IF = this_if
   THIS_IP = get_ip_address(THIS_IF)
-  src_ip = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-  src_address = get_hw_addr(THIS_IF)
-  client_macs = client_macs.split(',')
+  SRC_IP = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+  SRC_ADDRESS = get_hw_addr(THIS_IF)
+  HEARTBEAT_INTERVAL = int(heartbeat_interval)
+  RETRANSMISSION_TIMEOUT = int(retransmission_timeout)
 
-  pilo_transport = PiloTransport(self, UDP_IP, UDP_PORT, src_ip, src_address, int(retransmission_timeout), int(hearteat_interval))
+  client_macs = client_macs.split(',')
 
   def start_switch (event):
     new_connection = event.connection
@@ -170,7 +190,7 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
       return
 
     log.debug("Controlling %s" % (event.connection,))
-    PiloController(event.connection, client_macs, sender, receiver)
+    PiloController(event.connection, client_macs)
     return EventHalt
 
   core.openflow.addListenerByName("ConnectionUp", start_switch, priority=9) # Arbitrary priority needs to be >0

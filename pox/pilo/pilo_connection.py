@@ -27,10 +27,85 @@ from pox.lib.revent.revent import EventMixin
 from pox.openflow.util import make_type_to_unpacker_table
 import datetime
 import time
+import binascii
 
 log = core.getLogger()
 
 unpackers = make_type_to_unpacker_table()
+
+def pilo_handle_FEATURES_REPLY (con, msg):
+  connecting = con.connect_time == None
+  con.features = msg
+  con.original_ports._ports = set(msg.ports)
+  con.ports._reset()
+  con.dpid = msg.datapath_id
+
+  if not connecting:
+    con.ofnexus._connect(con)
+    e = con.ofnexus.raiseEventNoErrors(FeaturesReceived, con, msg)
+    if e is None or e.halt != True:
+      log.debug('\n\n--- Raising features received --- \n\n')
+      con.raiseEventNoErrors(FeaturesReceived, con, msg)
+    return
+
+  nexus = core.OpenFlowConnectionArbiter.getNexus(con)
+  if nexus is None:
+    # Cancel connection
+    con.info("No OpenFlow nexus for " +
+             pox.lib.util.dpidToStr(msg.datapath_id))
+    con.disconnect()
+    return
+  con.ofnexus = nexus
+  con.ofnexus._connect(con)
+  #connections[con.dpid] = con
+
+  barrier = of.ofp_barrier_request()
+
+  listeners = []
+
+  def finish_connecting (event):
+    log.debug('--- received BarrierIn in PiloConnection --- ')
+    if event.xid != barrier.xid:
+      log.debug('event.xid does not match barrier.xid')
+      # con.dpid = None
+      # con.err("failed connect")
+      # con.disconnect()
+    else:
+      con.info("connected")
+      con.connect_time = time.time()
+      e = con.ofnexus.raiseEventNoErrors(ConnectionUp, con, msg)
+      if e is None or e.halt != True:
+        con.raiseEventNoErrors(ConnectionUp, con, msg)
+      e = con.ofnexus.raiseEventNoErrors(FeaturesReceived, con, msg)
+      if e is None or e.halt != True:
+        con.raiseEventNoErrors(FeaturesReceived, con, msg)
+    con.removeListeners(listeners)
+  listeners.append(con.addListener(BarrierIn, finish_connecting))
+
+  def also_finish_connecting (event):
+    if event.xid != barrier.xid: return
+    if event.ofp.type != of.OFPET_BAD_REQUEST: return
+    if event.ofp.code != of.OFPBRC_BAD_TYPE: return
+    # Okay, so this is probably an HP switch that doesn't support barriers
+    # (ugh).  We'll just assume that things are okay.
+    finish_connecting(event)
+  listeners.append(con.addListener(ErrorIn, also_finish_connecting))
+
+  #TODO: Add a timeout for finish_connecting
+
+  if con.ofnexus.miss_send_len is not None:
+    con.send(of.ofp_set_config(miss_send_len =
+                                  con.ofnexus.miss_send_len))
+
+  log.debug('sending barrier: ')
+  log.debug(barrier)
+  con.send(barrier)
+
+# TODO: If we want to dig into pox/of core more, we can refactor this to make cleaner
+# We can override message handlers here
+handlerMap[of.OFPT_FEATURES_REPLY] =  pilo_handle_FEATURES_REPLY
+handlers = set_handlers(handlerMap)
+
 
 class PiloConnection (Connection):
   """
@@ -38,13 +113,14 @@ class PiloConnection (Connection):
   with an openflow switch
   """
 
-  def __init__ (self, sock, pilo_address, sender, receiver):
+  def __init__ (self, sock, pilo_connection):
 
-    self.pilo_address = pilo_address
-    self.dpid = EthAddr(pilo_address)
-    self.transport.addListenerByName('PiloDataIn', self.receive)
+    self.pilo_connection = pilo_connection
+    self.dpid = EthAddr(pilo_connection.dst_address)
+    self.pilo_connection = pilo_connection
+    self.pilo_connection.addListenerByName('PiloDataIn', self.receive)
 
-    super(PiloConnection, self).__init__(sock)
+    super(PiloConnection, self).__init__(sock, send_hello=False)
 
   def close (self):
     self.disconnect('closed')
@@ -66,7 +142,7 @@ class PiloConnection (Connection):
           self.raiseEventNoErrors(ConnectionDown, self)
       self.disconnected = True
 
-    self.sender.disconnect(self.pilo_address, disconnect_callback)
+    self.pilo_connection.close(callback=disconnect_callback)
 
   def send (self, data):
     """
@@ -76,6 +152,9 @@ class PiloConnection (Connection):
     Data should probably either be raw bytes in OpenFlow wire format, or
     an OpenFlow controller-to-switch message object from libopenflow.
     """
+    log.debug('entering send. data = ')
+    log.debug(data)
+
     if self.disconnected: return
     if type(data) is not bytes:
       # There's actually no reason the data has to be an instance of
@@ -84,37 +163,43 @@ class PiloConnection (Connection):
       assert isinstance(data, of.ofp_header)
       data = data.pack()
 
-    pilo_packet = pkt.pilo()
-    pilo_packet.dst_address  = self.pilo_address
-    pilo_packet.payload = data
-
-    self.sender.send(pilo_packet)
+    log.debug('sending to switch from piloconnection')
+    log.debug('msg=')
+    log.debug(binascii.hexlify(data))
+    self.pilo_connection.send(msg=data)
 
   def receive (self, event):
     """
-    This should be called from PiloTransport with a message that's ready to be handled
+    This should be called from PiloTransportConnection with a message that's ready to be handled
     It should contain the payload of a PILO packet which *should* be an OF message
     It doesn't currently implement any sort of buffering, so it will receive single
     PILO payloads and send them to any handlers as such
+    TODO: maxb - this is a little too copy+pasted frome of connection. Need to go back through.
     """
 
     msg = event.msg
     offset = 0
     ofp_type = ord(msg[offset+1])
+    log.debug('ofp_type = ' + str(ofp_type))
 
-    if ord(self.buf[offset]) != of.OFP_VERSION:
+    log.debug('ofp_version = ' + str(ord(msg[offset])))
+
+    if ord(msg[offset]) != of.OFP_VERSION:
       if ofp_type == of.OFPT_HELLO:
         # We let this through and hope the other side switches down.
         pass
       else:
         log.warning("Bad OpenFlow version (0x%02x) on connection %s"
-                    % (ord(self.buf[offset]), self))
+                    % (ord(msg[offset]), self))
         self.close()
 
-    msg_length = ord(self.buf[offset+2]) << 8 | ord(self.buf[offset+3])
+    msg_length = ord(msg[offset+2]) << 8 | ord(msg[offset+3])
 
-    new_offset,msg = unpackers[ofp_type](self.buf, offset)
+    new_offset,msg = unpackers[ofp_type](msg, offset)
     assert new_offset - offset == msg_length
+
+    log.debug('Receiving in pilo_connection:')
+    log.debug(msg)
 
     try:
       handler = handlers[ofp_type]

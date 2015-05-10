@@ -27,6 +27,7 @@ from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from twisted.internet.protocol import DatagramProtocol
 from lib.util import get_hw_addr, get_ip_address
 import socket, struct
+import binascii
 
 log = core.getLogger()
 
@@ -38,7 +39,7 @@ class PiloConnectionUp (Event):
   def __init__ (self, connection):
     Event.__init__(self)
     self.connection = connection
-    self.dst_address = connection.config.dst_address
+    self.dst_address = connection.dst_address
 
 class PiloConnectionDown (Event):
   """
@@ -48,7 +49,7 @@ class PiloConnectionDown (Event):
   def __init__ (self, connection):
     Event.__init__(self)
     self.connection = connection
-    self.dst_address = connection.config.dst_address
+    self.dst_address = connection.dst_address
 
 
 class PiloDataIn (Event):
@@ -69,7 +70,7 @@ class PiloPacketIn (Event):
 
 
 # TODO: replace this with OF out packet thing?
-def send_pilo_broadcast(self, packet):
+def send_pilo_broadcast (transport_config, packet):
   log.debug('Sending PILO broadcast')
   log.debug(packet)
   packed = packet.pack()
@@ -77,7 +78,8 @@ def send_pilo_broadcast(self, packet):
   sock = socket.socket(socket.AF_INET, # IP
       socket.SOCK_DGRAM) # UDP
   sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-  sock.sendto(packed, (self.udp_ip, self.udp_port))
+  sock.sendto(packed, (transport_config.udp_ip, transport_config.udp_port))
+
 
 class PiloTransportConfig (object):
   def __init__ (self, pilo_source_obj, udp_ip, udp_port, src_ip, src_address, retransmission_timeout, heartbeat_interval):
@@ -85,7 +87,7 @@ class PiloTransportConfig (object):
     self.udp_ip = udp_ip
     self.udp_port = udp_port
     self.src_ip = src_ip
-    self.src_address = EthAddr(self.src_address)
+    self.src_address = EthAddr(src_address)
     self.retransmission_timeout = retransmission_timeout
     self.heartbeat_interval = heartbeat_interval
 
@@ -94,21 +96,24 @@ class PiloTransport (EventMixin):
   _eventMixin_events = set([PiloConnectionUp, PiloConnectionDown, PiloDataIn])
 
   def __init__ (self, pilo_source_obj, udp_ip, udp_port, src_ip, src_address, retransmission_timeout, heartbeat_interval):
-    log.debug('Creating PiloTransport object')
     self.config = PiloTransportConfig(pilo_source_obj, udp_ip, udp_port, src_ip, src_address, retransmission_timeout, heartbeat_interval)
-    pilo_source_obj.addListeners()
+    pilo_source_obj.addListeners(self)
     self.connections = []
-    self.addListeners()
+    self.addListeners(self)
 
   def __str__ (self):
-    string = 'PiloTransport: src_address=' + self.config.src_address +
-             ' src_ip=' + self.config.src_ip +
-             ' udp_ip=' + self.config.udp_ip +
-             ' retransmission_timeout=' + self.config.retransmission_timeout
+    string = """PiloTransport: src_address={src_address}
+                src_ip={src_ip}
+                udp_ip={udp_ip}
+                retransmission_timeout={retransmission_timeout}
+             """.format(src_address=self.config.src_address,
+                        src_ip=self.config.src_ip,
+                        udp_ip=self.config.udp_ip,
+                        retransmission_timeout=self.config.retransmission_timeout)
 
     if self.connections:
       string += "\nConnections:"
-      for connection in self.connections
+      for connection in self.connections:
         string += str(connection) + '\n'
 
     return string;
@@ -130,37 +135,39 @@ class PiloTransport (EventMixin):
     dst_mac = EthAddr(pilo_packet.dst_address)
     src_mac = EthAddr(pilo_packet.src_address)
 
-    if pkt.packet_utils.same_mac(local_mac, src_mac):
+    if pkt.packet_utils.same_mac(self.config.src_address, src_mac):
       log.debug('This came from us, so we can ignore')
       return
 
-    if pkt.packet_utils.same_mac(dst_mac, local_mac):
+    if pkt.packet_utils.same_mac(dst_mac, self.config.src_address):
       log.debug('This is for us:')
       log.debug(pilo_packet)
       # Find connection with that address
       connection = None
       for con in self.connections:
-        if pkt.packet_utils.same_mac(connection.address, pilo_packet.src_address):
+        if pkt.packet_utils.same_mac(con.dst_address, pilo_packet.src_address):
           connection = con
 
       if pilo_packet.SYN and not pilo_packet.ACK:
         if connection:
+          connection.send_synack()
           return
-        new_connection = PiloTransportConnection(self.config, self, pilo_packet.src_address, initiating=False)
+        packet_len = len(pilo_packet.pack())
+        new_connection = PiloTransportConnection(self.config, self, pilo_packet.src_address, rx_seq=packet_len, initiating=False)
         # Add to connections list
         self.connections.append(new_connection)
       else:
         # Any packet that isn't a SYN should be part of a connection
         if not connection:
           return
-        connection.handle_packet(pilo_packet)
+        connection.handle_packet_in(pilo_packet)
 
     else:
       log.debug('Message not for us, let\'s flood it back out')
       # TODO: Memory w/ timer for packets we've already seen?
       pilo_packet.ttl = pilo_packet.ttl - 1
       if pilo_packet.ttl > 0:
-        send_pilo_broadcast(pilo_packet)
+        send_pilo_broadcast(self.config, pilo_packet)
       else:
         log.debug('TTL expired:')
         log.debug(pilo_packet)
@@ -168,7 +175,7 @@ class PiloTransport (EventMixin):
   def initiate_connection (self, dst_address):
     if not isinstance(dst_address, EthAddr):
       dst_address = EthAddr(dst_address)
-    new_connection = PiloTransportConnection(self.config, self, pilo_packet.src_address)
+    new_connection = PiloTransportConnection(self.config, self, dst_address)
     self.connections.append(new_connection)
 
   def send (self, dst_address, msg):
@@ -179,36 +186,39 @@ class PiloTransport (EventMixin):
       dst_address = EthAddr(dst_address)
 
     connection = None
-      for con in self.connections:
-        if pkt.packet_utils.same_mac(connection.address, pilo_packet.src_address):
-          connection = con
+    for con in self.connections:
+      if pkt.packet_utils.same_mac(connection.dst_address, dst_address):
+        connection = con
 
     assert connection
     connection.send(msg)
 
-  def terminate_connection (self, address):
+  def terminate_connection (self, address, callback=None):
     for connection in self.connections:
       if pkt.packet_utils.same_mac(connection.dst_address, address):
         # Do we need a callback?
         def _terminate_connection_callback (packet):
           self.connections.remove(connection)
+          if callback:
+            callback(packet)
 
         connection.close(callback=_terminate_connection_callback)
 
 
-class PiloTransportConnection (object):
+class PiloTransportConnection (EventMixin):
+  _eventMixin_events = set([PiloDataIn])
 
-  def __init__ (self, config, transport, dst_address, connected=False, initiating=True):
+  def __init__ (self, config, transport, dst_address, connected=False, initiating=True, rx_seq=0):
     log.debug('Creating PiloTransport object')
     self.config = config
-    self.src_address = config.src_address
     self.transport = transport
     self.connected = connected
+    self.initiating = initiating
     self.in_transit = []
     self.rx_buffer = []
     self.most_recent_rx = None
-    self.seq = 0
-    self.rx = 0
+    self.tx_seq = 0
+    self.rx_seq = rx_seq
     self.acked = 0
 
     if isinstance(dst_address, EthAddr):
@@ -216,7 +226,7 @@ class PiloTransportConnection (object):
     else:
       self.dst_address = EthAddr(dst_address)
 
-    self.transport.addListeners()
+    self.transport.addListeners(self)
 
     if not connected:
       if self.initiating:
@@ -224,54 +234,83 @@ class PiloTransportConnection (object):
         self.send(callback=self.synack_callback, SYN=True)
       else:
         # Send SYNACK
-        self.send(SYN=True, ACK=True)
-
-    # TODO: will this work? I want to add this class' handlers
-    # to its own events...
-    # DO I need this?
-    self.addListeners()
+        self.send_synack()
 
     self.heartbeat_timer = Timer(self.config.heartbeat_interval, self.check_heartbeat)
 
   def __str__ (self):
-    string = 'PiloTransportConnection: ' +
-             ' dst_address = ' + str(self.dst_address) +
-             ' connected= ' + str(self.connected) +
-             ' initiating= ' + str(self.inititating)
+    string = """PiloTransportConnection:
+                dst_address = {dst_address}
+                connected = {connected}
+                initiating = {initiating}
+             """.format(dst_address=(self.dst_address),
+                        connected=str(self.connected),
+                        initiating=str(self.initiating))
+
     return string
 
-  def close (callback=None):
+  def close (self, callback=None):
     def _fin_callback ():
-      self.transport.raiseEventNoErrors(PiloConnectionDown, self)
+      self.transport.raiseEvent(PiloConnectionDown, self)
       if callback:
         callback()
 
     self.send(callback=_fin_callback, FIN=True)
 
+  def send_synack (self):
+    packet = pkt.pilo()
+    packet.src_address  = self.config.src_address
+    packet.dst_address  = self.dst_address
+    packet.seq = packet.seq
+    packet.ack = packet.seq + len(packet.pack())
+    packet.ACK = True
+    packet.SYN = True
+
+    self.send_packet(packet, callback=self.synackack_callback)
+
+  # TODO: Better naming!
+  def synackack_callback (self, packet):
+    """
+    For when we've gotten an ACK for our SYNACK
+    """
+    self.ack(packet)
+    if not self.connected:
+      self.connected = True
+      self.transport.raiseEvent(PiloConnectionUp, self)
+
   def synack_callback (self, packet):
-    self.connected = True
-    self.transport.raiseEventNoErrors(PiloConnectionUp, self)
-    self.ack(pilo_packet)
+    """
+    For when we've gotten a SYNACK for our SYN
+    """
+    self.ack(packet)
+    if not self.connected:
+      self.connected = True
+      self.transport.raiseEvent(PiloConnectionUp, self)
+
 
   def ack (self, packet):
-    pilo_packet = pkt.pilo()
-    pilo_packet.src_address  = self.config.src_address
-    pilo_packet.dst_address  = self.dst_address
-    pilo_packet.seq = packet.seq
-    pilo_packet.ack = packet.seq + len(packet.pack())
-    pilo_packet.ACK = True
+    log.debug('Acking packet:')
+    log.debug(packet)
+    ack_packet = pkt.pilo()
+    ack_packet.src_address  = self.config.src_address
+    ack_packet.dst_address  = self.dst_address
+    ack_packet.seq = packet.seq
+    ack_packet.ack = packet.seq + len(packet.pack())
+    ack_packet.ACK = True
 
-    send_pilo_broadcast(pilo_packet)
+    send_pilo_broadcast(self.config, ack_packet)
 
   def send_finack (self):
     def _finack_callback ():
-      self.transport.raiseEventNoErrors(PiloConnectionDown, self)
+      self.transport.raiseEvent(PiloConnectionDown, self)
       if callback:
         callback()
 
     self.send(callback=_finack_callback, FIN=True, ACK=True)
 
   def handle_packet_in (self, packet):
+    log.debug('handle_packet_in')
+    log.debug(packet)
     # Handle everything other than SYN only packet
     if packet.FIN:
       self.send_finack()
@@ -280,42 +319,62 @@ class PiloTransportConnection (object):
       self.handle_ack_in(packet)
       return
 
-    ack_no = packet.seq + len(packet.pack())
-    # If this packet matches the connection's rx
-    if self.rx == packet.seq:
+    # If this packet matches the connection's rx_seq
+    if self.rx_seq == packet.seq:
+      log.debug('Matches rx_seq')
       # reduce congestion
-      # update this connections rx
-      self.rx += len(packet.pack())
+      # update this connections rx_seq
+      self.rx_seq += len(packet.pack())
       # send ack for this packet
       # TODO: would be better to only send one ack for multiple packets to
       self.ack(packet)
       self.most_recent_rx = packet
-      # Raise PiloDataIn event so that objects above us know a message has come in
-      self.transport.raiseEventNoErrors(PiloDataIn, packet.msg)
+      is_data_in = True
+
+      if packet.HRB:
+        is_data_in = False
+
+      if is_data_in:
+        # Raise PiloDataIn event so that objects above us know a message has come in
+        log.debug('Raising PiloDataIn. payload=')
+        log.debug(binascii.hexlify(packet.payload))
+        # TODO: Need to sort out whether we need to raise on one or both
+        self.transport.raiseEvent(PiloDataIn, packet.payload)
+        self.raiseEvent(PiloDataIn, packet.payload)
+
       # sort rx_buffer by seq
       self.rx_buffer.sort(key=lambda x: x.seq)
 
       # call handle_packet_in on first packet in buffer
       try:
-        self.handle_packet_in(rx_buffer[0])
+        self.handle_packet_in(self.rx_buffer[0])
       except IndexError:
         # No packets in the rx_buffer
         pass
 
-    # If this packet does not match the sender's seq no
+    # If this packet does not match the sender's rx_seq
     else:
-      # if it's not below current seq no
-      if packet.seq > self.rx:
-        # ack the current rx
-        self.ack(self.most_recent_rx)
-        # add this packet to their buffer
+      log.debug('Does not match rx_seq')
+      log.debug('rx_seq = ' + str(self.rx_seq))
+      log.debug(packet)
+      # if it's above current rx_seq
+      if packet.seq > self.rx_seq:
+        # ack the current rx_seq
+        if self.most_recent_rx:
+          self.ack(self.most_recent_rx)
+        # add this packet to the rx_buffer
         already_buffered = False
-        for buffered in rx_buffer:
+        for buffered in self.rx_buffer:
           if buffered == packet:
             already_buffered = True
 
         if not already_buffered:
-          self.rx_buffer.append(pilo_packet)
+          self.rx_buffer.append(packet)
+
+      else:
+        # if it's below the current rx_seq we've already received it and we should ack this anyway
+        self.ack(packet)
+
 
   def handle_ack_in (self, ack_packet):
 
@@ -326,80 +385,106 @@ class PiloTransportConnection (object):
     log.debug('Handling ack:')
     log.debug(ack_packet)
 
-    log.debug('In transit:')
-    # TODO: Potentially add some checksum check
+    log.debug('still in transit:')
+    log.debug('-----')
     for sent in self.in_transit:
       packet = sent['packet']
       log.debug(packet)
-      if (pkt.packet_utils.same_mac(ack_packet.src_address, packet.dst_address) and
-          ack_packet.seq == packet.seq and
-          ack_packet.ack == packet.seq + len(packet.pack())):
+      if (ack_packet.seq >= packet.seq and
+          ack_packet.ack >= packet.seq + len(packet.pack())):
 
-        self.in_transit.remove(packet)
+        log.debug('Received ACK for packet:')
+        log.debug(sent['packet'])
+        log.debug('\n')
+
+        self.in_transit.remove(sent)
         if sent['callback']:
           sent['callback'](packet)
+    log.debug('-----')
 
-  def send (self, msg=None, callback=None **flags):
-    pilo_packet = pkt.pilo()
-    pilo_packet.src_address  = self.config.src_address
-    pilo_packet.dst_address  = self.dst_address
+  def send (self, msg=None, callback=None, **flags):
+    packet = pkt.pilo()
+    packet.src_address  = self.config.src_address
+    packet.dst_address  = self.dst_address
 
-    if flags['ACK']:
-      pilo_packet.ACK = True
-    if flags['SYN']:
-      pilo_packet.SYN = True
-    if flags['FIN']:
-      pilo_packet.FIN = True
-    if flags['HRB']:
-      pilo_packet.HRB = True
+    # TODO: there has got to be a better way to do this....
+    try:
+      if flags['ACK']:
+        packet.ACK = True
+    except KeyError:
+      pass
+    try:
+      if flags['SYN']:
+        packet.SYN = True
+    except KeyError:
+      pass
+    try:
+      if flags['FIN']:
+        packet.FIN = True
+    except KeyError:
+      pass
+    try:
+      if flags['HRB']:
+        packet.HRB = True
+    except KeyError:
+      pass
 
     if msg:
-      pilo_packet.payload = msg
+      packet.payload = msg
 
-    self.send_packet(pilo_packet, callback=callback)
+    packet.seq = self.tx_seq
+    self.tx_seq += len(packet.pack())
+
+    self.send_packet(packet, callback=callback)
 
   def send_packet (self, packet, callback=None):
-    packet.seq = self.seq
-    self.seq += len(packet.pack())
 
-    send_pilo_broadcast(packet)
+    log.debug('send_packet')
+    log.debug(packet)
+
+    send_pilo_broadcast(self.config, packet)
     self.in_transit.append({
       'packet':packet,
       'callback': callback
       })
-    core.callDelayed(self.retransmission_timeout, self.check_acked, packet)
+    core.callDelayed(self.config.retransmission_timeout, self.check_acked, packet)
 
   def check_acked(self, pilo_packet):
     log.debug('checking if acked:')
     log.debug(pilo_packet)
+    still_in_transit = False
 
     log.debug('still in self.in_transit:')
+    log.debug('-----')
     for sent in self.in_transit:
       packet = sent['packet']
       log.debug(packet)
-      log.debug('packet len:' + str(len(packet.pack())))
+      if packet == pilo_packet:
+        still_in_transit = True
+    log.debug('-----')
 
     log.debug(pilo_packet)
-    if pilo_packet in self.in_transit:
+    if still_in_transit:
       log.debug('is still in transit')
-      send_pilo_broadcast(pilo_packet)
-      core.callDelayed(self.retransmission_timeout, self.check_acked, pilo_packet)
+      send_pilo_broadcast(self.config, pilo_packet)
+      core.callDelayed(self.config.retransmission_timeout, self.check_acked, pilo_packet)
 
     else:
       log.debug('is not still in transit')
 
   def check_heartbeat (self):
     def _heartbeat_acked (packet):
+      self.expiration_timer.cancel()
       self.heartbeat_timer = Timer(self.config.heartbeat_interval, self.check_heartbeat)
 
     self.send(callback=_heartbeat_acked, HRB=True)
-    core.callDelayed(self.config.heartbeat_interval, self.heartbeat_timeout)
+    self.expiration_timer = Timer(self.config.heartbeat_interval, self.heartbeat_timeout)
 
   def heartbeat_timeout (self):
     log.debug('heartbeat timeout for connection: ' + str(self))
     # TODO: best way to signal connection down here?
     # No need to do any FIN/FINACK I think...
     self.connected = False
-    self.transport.raiseEventNoErrors(PiloConnectionDown, self)
+    self.transport.raiseEvent(PiloConnectionDown, self)
 
 

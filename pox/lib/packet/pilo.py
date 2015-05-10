@@ -28,9 +28,9 @@
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 #  |                    Acknowledgment Number                      |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |A|S|F|                         |                               |
-#  |C|Y|I|                         |              TTL              |
-#  |K|N|N|                         |                               |
+#  |A|S|F|H|                       |                               |
+#  |C|Y|I|R|                       |              TTL              |
+#  |K|N|N|B|                       |                               |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 #  |                             data                              |
 #  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -60,11 +60,12 @@ class pilo(packet_base):
 
     MIN_LEN = 24
 
-    TTL_INIT = 64 # TODO:Probably want to better test this?
+    TTL_INIT = 12 # TODO:Probably want to better test this?
 
     ACK_flag = 0x01
     SYN_flag = 0x02
     FIN_flag = 0x04
+    HRB_flag = 0x08
 
     @property
     def ACK (self): return True if self.flags & self.ACK_flag else False
@@ -75,6 +76,9 @@ class pilo(packet_base):
     @property
     def FIN (self): return True if self.flags & self.FIN_flag else False
 
+    @property
+    def HRB (self): return True if self.flags & self.HRB_flag else False
+
     @ACK.setter
     def ACK (self, value): self._setflag(self.ACK_flag, value)
 
@@ -83,6 +87,9 @@ class pilo(packet_base):
 
     @FIN.setter
     def FIN (self, value): self._setflag(self.FIN_flag, value)
+
+    @HRB.setter
+    def HRB (self, value): self._setflag(self.HRB_flag, value)
 
     def _setflag (self, flag, value):
       self.flags = (self.flags & ~flag) | (flag if value else 0)
@@ -110,9 +117,10 @@ class pilo(packet_base):
         if self.ACK: f += 'A'
         if self.SYN: f += 'S'
         if self.FIN: f += 'F'
+        if self.HRB: f += 'H'
 
-        s = '[PILO %s>%s seq:%s ack:%s f:%s ttl:%s]' % (self.src_address,
-            self.dst_address, self.seq, self.ack, f, self.ttl)
+        s = '[PILO %s>%s seq:%s ack:%s f:%s ttl:%s len:%s]' % (self.src_address,
+            self.dst_address, self.seq, self.ack, f, self.ttl, len(self.pack()))
 
         return s
 
@@ -150,3 +158,23 @@ class pilo(packet_base):
                  self.seq, self.ack, self.flags, self.ttl)
 
         return header
+
+    # In order to compare packets, we can use:
+    # http://stackoverflow.com/questions/390250/elegant-ways-to-support-equivalence-equality-in-python-classes/25176504#25176504
+    # Likely this should actually be implemented for all POX packets
+    # but I'm going to pass on that now - maxb
+    def __eq__(self, other):
+        """Override the default Equals behavior"""
+        if isinstance(other, self.__class__):
+            return self.__dict__ == other.__dict__
+        return NotImplemented
+
+    def __ne__(self, other):
+        """Define a non-equality test"""
+        if isinstance(other, self.__class__):
+            return not self.__eq__(other)
+        return NotImplemented
+
+    def __hash__(self):
+        """Override the default hash behavior (that returns the id or the object)"""
+        return hash(tuple(sorted(self.__dict__.items())))

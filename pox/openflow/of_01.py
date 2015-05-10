@@ -34,6 +34,7 @@ log = core.getLogger()
 
 import socket
 import select
+import binascii
 
 # List where the index is an OpenFlow message type (OFPT_xxx), and
 # the values are unpack functions that unpack the wire format of that
@@ -600,7 +601,7 @@ class Connection (EventMixin):
     #print str(self), m
     log.info(str(self) + " " + str(m))
 
-  def __init__ (self, sock):
+  def __init__ (self, sock, send_hello=True):
     self._previous_stats = []
 
     self.ofnexus = _dummyOFNexus
@@ -617,7 +618,14 @@ class Connection (EventMixin):
     self.connect_time = None
     self.idle_time = time.time()
 
-    self.send(of.ofp_hello())
+    if send_hello:
+      log.debug('sending of.ofp_hello')
+      self.send(of.ofp_hello())
+    else:
+      log.debug('sending of.ofp_features_request')
+      msg = of.ofp_features_request()
+      log.debug(msg)
+      self.send(msg)
 
     self.original_ports = PortCollection()
     self.ports = PortCollection()
@@ -696,6 +704,18 @@ class Connection (EventMixin):
       deferredSender.send(self, data)
       return
     try:
+
+      log.debug('sending to ovs from regular connection')
+      log.debug('msg=')
+      try:
+        ofp_header = of.ofp_header()
+        ofp_header.unpack(data)
+        log.debug(ofp_header)
+      except:
+        log.debug('Exception attempting to unpack msg for debugging:')
+        traceback.print_exc()
+        log.debug(e)
+
       l = self.sock.send(data)
       if l != len(data):
         self.msg("Didn't send complete buffer.")
@@ -941,12 +961,13 @@ class OpenFlow_01_Task (Task):
     #pox.core.quit()
 
 
-def _set_handlers ():
+def set_handlers (handlerMap):
   handlers.extend([None] * (1 + sorted(handlerMap.keys(),reverse=True)[0]))
   for h in handlerMap:
     handlers[h] = handlerMap[h]
     #print handlerMap[h]
-_set_handlers()
+  return handlers
+set_handlers(handlerMap)
 
 
 # Used by the Connection class
