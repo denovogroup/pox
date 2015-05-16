@@ -81,6 +81,7 @@ class PiloController (EventMixin):
     connection.addListeners(self)
     self.transport.addListeners(self)
 
+  # TODO: Need to raise ConnectionDown event here
   def remove_client(self, address):
     for controlled in self.controlling:
       if pkt.packet_utils.same_mac(controlled['mac'], address):
@@ -150,7 +151,7 @@ class PiloController (EventMixin):
       pilo_packet = pkt.pilo(udp.payload)
 
       log.debug('PILO packet: ' + str(pilo_packet))
-      self.raiseEvent(PiloPacketIn, pilo_packet)
+      self.raiseEvent(PiloPacketIn, pilo_packet, event.ofp, packet)
 
     except Exception as e:
       log.debug(e)
@@ -177,6 +178,7 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
   UDP_PORT = int(udp_port)
   THIS_IF = this_if
   THIS_IP = get_ip_address(THIS_IF)
+  # TODO: This SRC_IP assignment is COMPLETELY WRONG
   SRC_IP = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
   SRC_ADDRESS = get_hw_addr(THIS_IF)
   HEARTBEAT_INTERVAL = int(heartbeat_interval)

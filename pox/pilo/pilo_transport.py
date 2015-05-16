@@ -18,7 +18,9 @@ Implements reliable transport for our PILO messages
 """
 
 from pox.core import core
+import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
+from pox.lib.packet.ethernet import ETHER_BROADCAST
 
 from pox.lib.recoco import Timer
 from pox.lib.revent.revent import EventMixin
@@ -28,6 +30,7 @@ from twisted.internet.protocol import DatagramProtocol
 from lib.util import get_hw_addr, get_ip_address
 import socket, struct
 import binascii
+import traceback
 
 log = core.getLogger()
 
@@ -64,21 +67,11 @@ class PiloPacketIn (Event):
   """
   Event raised when pilo packet comes in from pilo_source_obj
   """
-  def __init__ (self, packet):
+  def __init__ (self, packet, ofp, eth_packet):
     Event.__init__(self)
     self.packet = packet
-
-
-# TODO: replace this with OF out packet thing?
-def send_pilo_broadcast (transport_config, packet):
-  log.debug('Sending PILO broadcast')
-  log.debug(packet)
-  packed = packet.pack()
-
-  sock = socket.socket(socket.AF_INET, # IP
-      socket.SOCK_DGRAM) # UDP
-  sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-  sock.sendto(packed, (transport_config.udp_ip, transport_config.udp_port))
+    self.ofp = ofp
+    self.eth_packet = eth_packet
 
 
 class PiloTransportConfig (object):
@@ -90,6 +83,23 @@ class PiloTransportConfig (object):
     self.src_address = EthAddr(src_address)
     self.retransmission_timeout = retransmission_timeout
     self.heartbeat_interval = heartbeat_interval
+
+  def __str__ (self):
+    string = """PiloTransportConfig: src_address={src_address}
+                udp_port={udp_port}
+                src_ip={src_ip}
+                udp_ip={udp_ip}
+                heartbeat_interval={heartbeat_interval}
+                retransmission_timeout={retransmission_timeout}
+             """.format(src_address=self.src_address,
+                        udp_port=self.udp_port,
+                        src_ip=self.src_ip,
+                        udp_ip=self.udp_ip,
+                        heartbeat_interval=self.heartbeat_interval,
+                        retransmission_timeout=self.retransmission_timeout)
+
+    return string
+
 
 
 class PiloTransport (EventMixin):
@@ -117,6 +127,49 @@ class PiloTransport (EventMixin):
         string += str(connection) + '\n'
 
     return string;
+
+  # TODO: replace this with OF out packet thing?
+  def send_pilo_broadcast (self, packet, ofp=None):
+    log.debug('Sending PILO broadcast')
+    log.debug(packet)
+    packed = packet.pack()
+
+    if ofp:
+      try:
+        # TODO: Start from here!
+        udp_packet = pkt.udp(srcport=self.config.udp_port, dstport=self.config.udp_port)
+        udp_packet.set_payload(packed)
+        ip_packet = pkt.ipv4(protocol = pkt.ipv4.UDP_PROTOCOL, dstip=IPAddr(self.config.udp_ip))
+        ip_packet.set_payload(udp_packet)
+        ethernet_packet = pkt.ethernet(type=pkt.ethernet.IP_TYPE, src=self.config.src_address, dst=ETHER_BROADCAST)
+        ethernet_packet.set_payload(ip_packet)
+        log.debug('using OVS to send broadcast')
+        # log.debug('ethernet:')
+        # log.debug(ethernet_packet)
+        # log.debug('ip:')
+        # log.debug(ip_packet)
+        # log.debug('udp:')
+        # log.debug(udp_packet)
+        broadcast = of.ofp_packet_out()
+        broadcast.data = ethernet_packet
+        broadcast.in_port = ofp.in_port
+        broadcast.actions.append(of.ofp_action_output(port = of.OFPP_ALL))
+        self.config.pilo_source_obj.connection.send(broadcast)
+
+      except Exception as e:
+        log.debug('Exception:')
+        traceback.print_exc()
+        log.debug(e)
+        log.debug('config:')
+        log.debug(str(self.config))
+        log.debug('Can\'t send ovs message')
+
+    else:
+      sock = socket.socket(socket.AF_INET, # IP
+          socket.SOCK_DGRAM) # UDP
+      sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+      sock.sendto(packed, (self.config.udp_ip, self.config.udp_port))
+
 
   def _handle_PiloConnectionDown (self, event):
     """
@@ -164,10 +217,11 @@ class PiloTransport (EventMixin):
 
     else:
       log.debug('Message not for us, let\'s flood it back out')
+      # TODO: We don't want to send this back on the port it came from!
       # TODO: Memory w/ timer for packets we've already seen?
       pilo_packet.ttl = pilo_packet.ttl - 1
       if pilo_packet.ttl > 0:
-        send_pilo_broadcast(self.config, pilo_packet)
+        self.send_pilo_broadcast(pilo_packet, ofp=event.ofp)
       else:
         log.debug('TTL expired:')
         log.debug(pilo_packet)
@@ -300,7 +354,7 @@ class PiloTransportConnection (EventMixin):
     ack_packet.ack = packet.seq + len(packet.pack())
     ack_packet.ACK = True
 
-    send_pilo_broadcast(self.config, ack_packet)
+    self.transport.send_pilo_broadcast(ack_packet)
 
   def send_finack (self):
     def _finack_callback ():
@@ -375,7 +429,8 @@ class PiloTransportConnection (EventMixin):
 
       else:
         # if it's below the current rx_seq we've already received it and we should ack this anyway
-        self.ack(packet)
+        # self.ack(packet)
+        pass
 
 
   def handle_ack_in (self, ack_packet):
@@ -387,11 +442,8 @@ class PiloTransportConnection (EventMixin):
     log.debug('Handling ack:')
     log.debug(ack_packet)
 
-    log.debug('still in transit:')
-    log.debug('-----')
     for sent in self.in_transit:
       packet = sent['packet']
-      log.debug(packet)
       if (ack_packet.seq >= packet.seq and
           ack_packet.ack >= packet.seq + len(packet.pack())):
 
@@ -402,7 +454,6 @@ class PiloTransportConnection (EventMixin):
         self.in_transit.remove(sent)
         if sent['callback']:
           sent['callback'](packet)
-    log.debug('-----')
 
   def send (self, msg=None, callback=None, **flags):
     packet = pkt.pilo()
@@ -444,7 +495,12 @@ class PiloTransportConnection (EventMixin):
     log.debug('send_packet')
     log.debug(packet)
 
-    send_pilo_broadcast(self.config, packet)
+    # Don't queue/send identical packets
+    for transit in self.in_transit:
+      if transit['packet'] == packet:
+        return
+
+    self.transport.send_pilo_broadcast(packet)
     self.in_transit.append({
       'packet':packet,
       'callback': callback
@@ -456,19 +512,15 @@ class PiloTransportConnection (EventMixin):
     log.debug(pilo_packet)
     still_in_transit = False
 
-    log.debug('still in self.in_transit:')
-    log.debug('-----')
     for sent in self.in_transit:
       packet = sent['packet']
-      log.debug(packet)
       if packet == pilo_packet:
         still_in_transit = True
-    log.debug('-----')
 
     log.debug(pilo_packet)
     if still_in_transit:
       log.debug('is still in transit')
-      send_pilo_broadcast(self.config, pilo_packet)
+      self.transport.send_pilo_broadcast(pilo_packet)
       self.ack_timers.append(Timer(self.config.retransmission_timeout, self.check_acked, args=[pilo_packet]))
 
     else:

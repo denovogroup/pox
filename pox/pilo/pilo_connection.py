@@ -152,9 +152,6 @@ class PiloConnection (Connection):
     Data should probably either be raw bytes in OpenFlow wire format, or
     an OpenFlow controller-to-switch message object from libopenflow.
     """
-    log.debug('entering send. data = ')
-    log.debug(data)
-
     if self.disconnected: return
     if type(data) is not bytes:
       # There's actually no reason the data has to be an instance of

@@ -236,7 +236,7 @@ class PiloClient (EventMixin):
       pilo_packet = pkt.pilo(udp.payload)
 
       log.debug('PILO packet: ' + str(pilo_packet))
-      self.raiseEvent(PiloPacketIn, pilo_packet)
+      self.raiseEvent(PiloPacketIn, pilo_packet, event.ofp, packet)
 
     except Exception as e:
       log.debug('Exception:')
@@ -277,6 +277,7 @@ def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5
   THIS_IF = this_if
   UDP_PORT = int(udp_port)
   CONTROLLER_MAC = controller_mac
+  # TODO: This SRC_IP assignment is COMPLETELY WRONG
   SRC_IP = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
   SRC_ADDRESS = get_hw_addr(THIS_IF)
   HEARTBEAT_INTERVAL = int(heartbeat_interval)
