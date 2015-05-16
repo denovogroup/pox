@@ -54,6 +54,7 @@ class TestController (object):
         self.connection.send(random_flow)
 
     Timer(10, _send_random_flow, recurring=True)
+    _send_random_flow()
     connection.addListeners(self)
 
   def _handle_PacketIn (self, event):
