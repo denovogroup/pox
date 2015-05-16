@@ -704,18 +704,6 @@ class Connection (EventMixin):
       deferredSender.send(self, data)
       return
     try:
-
-      log.debug('sending to ovs from regular connection')
-      log.debug('msg=')
-      try:
-        ofp_header = of.ofp_header()
-        ofp_header.unpack(data)
-        log.debug(ofp_header)
-      except:
-        log.debug('Exception attempting to unpack msg for debugging:')
-        traceback.print_exc()
-        log.debug(e)
-
       l = self.sock.send(data)
       if l != len(data):
         self.msg("Didn't send complete buffer.")
