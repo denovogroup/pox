@@ -240,7 +240,6 @@ class PiloClient (EventMixin):
 
     except Exception as e:
       log.debug('Exception:')
-      log.debug(traceback.format_exc())
       log.debug(e)
       log.debug('Can\'t parse PILO packet - this might be a table miss packet')
 
