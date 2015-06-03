@@ -240,7 +240,7 @@ class PiloClient (EventMixin):
 
     except Exception as e:
       log.debug('Exception:')
-      traceback.print_exc()
+      log.debug(traceback.format_exc())
       log.debug(e)
       log.debug('Can\'t parse PILO packet - this might be a table miss packet')
 
@@ -257,6 +257,7 @@ class PiloClient (EventMixin):
       except Exception as e:
         log.debug('Exception:')
         traceback.print_exc()
+        log.debug(traceback.format_exc())
         log.debug(e)
 
 def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5", heartbeat_interval="10"):

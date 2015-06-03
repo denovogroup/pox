@@ -110,7 +110,7 @@ class pilo(packet_base):
         if self.FIN: f += 'F'
         if self.HRB: f += 'H'
 
-        p_ack = ', '.join(self.get_partial_acks())
+        p_ack = ', '.join(str(ack) for ack in self.get_partial_acks())
 
         s = '[PILO %s>%s seq:%s ack:%s p_ack:%s f:%s ttl:%s len:%s]' % (self.src_address,
             self.dst_address, self.seq, self.ack, p_ack, f, self.ttl, len(self.pack()))
@@ -156,6 +156,18 @@ class pilo(packet_base):
         self.partial_acks = 0
         for ack in ack_array:
             self.partial_acks = self.partial_acks | (1 << ack - self.ack)
+
+    def get_partial_ack_holes (self):
+        holes_array = []
+        if self.partial_acks:
+            tmp_ack = self.partial_acks
+            ack_counter = 1
+            while tmp_ack > 0:
+                if tmp_ack ^ 1:
+                    holes_array.append(ack_counter + self.ack)
+
+                tmp_ack >>= 1
+        return holes_array
 
     def get_partial_acks (self):
         ack_array = []

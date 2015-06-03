@@ -213,7 +213,15 @@ class PiloTransport (EventMixin):
         # Any packet that isn't a SYN should be part of a connection
         if not connection:
           return
-        connection.handle_packet_in(pilo_packet)
+
+        try:
+          connection.handle_packet_in(pilo_packet)
+
+        except Exception as e:
+          log.debug('Exception:')
+          log.debug(traceback.format_exc())
+          log.debug(e)
+          log.debug('connection.handle_packet_in failed')
 
     else:
       log.debug('Message not for us, let\'s flood it back out')
@@ -269,7 +277,7 @@ class PiloTransportConnection (EventMixin):
     self.connected = connected
     self.initiating = initiating
     self.ack_timers = []
-    self.in_transit = []
+    self.in_transit = {}
     self.rx_buffer = []
     self.most_recent_rx = None
     self.tx_seq = 0
@@ -288,7 +296,7 @@ class PiloTransportConnection (EventMixin):
     if not connected:
       if self.initiating:
         # Send SYN in normal pipeline
-        self.send(callback=self.synack_callback, SYN=True)
+        self.send(callback=self.synack_callback, seq=0, SYN=True)
       else:
         # Send SYNACK
         self.send_synack()
@@ -319,7 +327,7 @@ class PiloTransportConnection (EventMixin):
     packet = pkt.pilo()
     packet.src_address  = self.config.src_address
     packet.dst_address  = self.dst_address
-    packet.seq = packet.seq
+    packet.seq = self.tx_seq
     packet.ack = packet.seq + 1
     packet.ACK = True
     packet.SYN = True
@@ -349,7 +357,13 @@ class PiloTransportConnection (EventMixin):
   def ack (self, packet, **flags):
     log.debug('Acking packet:')
     log.debug(packet)
+
+    partial_acks = []
+    for buffered in self.rx_buffer:
+      partial_acks.append(buffered.seq + 1)
+
     ack_packet = pkt.pilo()
+    ack_packet.set_partial_acks(partial_acks)
     ack_packet.src_address  = self.config.src_address
     ack_packet.dst_address  = self.dst_address
     ack_packet.ACK = True
@@ -360,8 +374,6 @@ class PiloTransportConnection (EventMixin):
     except KeyError:
       pass
 
-    # TODO: When we migrate all of the sequence to packet #s we'll be able to
-    # use the same as with heartbeats
     ack_packet.seq = packet.seq
     ack_packet.ack = packet.seq + 1
 
@@ -392,36 +404,37 @@ class PiloTransportConnection (EventMixin):
 
     # If this packet matches the connection's rx_seq
     if self.rx_seq == packet.seq:
+      last_packet = packet
       log.debug('Matches rx_seq')
-      # reduce congestion
-      # update this connections rx_seq
+      rx_pipeline = [packet]
       self.rx_seq += 1
-      # send ack for this packet
-      # TODO: would be better to only send one ack for multiple packets to
-      self.ack(packet)
-      self.most_recent_rx = packet
-      is_data_in = True
-
-      if packet.HRB:
-        is_data_in = False
-
-      if is_data_in:
-        # Raise PiloDataIn event so that objects above us know a message has come in
-        log.debug('Raising PiloDataIn. payload=')
-        log.debug(binascii.hexlify(packet.payload))
-        # TODO: Need to sort out whether we need to raise on one or both
-        self.transport.raiseEvent(PiloDataIn, packet.payload)
-        self.raiseEvent(PiloDataIn, packet.payload)
-
-      # sort rx_buffer by seq
       self.rx_buffer.sort(key=lambda x: x.seq)
+      for buffered in self.rx_buffer:
+        if self.rx_seq == buffered.seq:
+          rx_pipeline.append(buffered)
+          last_packet = buffered
+          self.rx_seq += 1
 
-      # call handle_packet_in on first packet in buffer
-      try:
-        self.handle_packet_in(self.rx_buffer[0])
-      except IndexError:
-        # No packets in the rx_buffer
-        pass
+      self.ack(last_packet)
+      self.most_recent_rx = last_packet
+
+      rx_pipeline.sort(key=lambda x: x.seq)
+      for pipelined in rx_pipeline:
+        is_data_in = True
+
+        if pipelined.HRB:
+          is_data_in = False
+
+        if is_data_in:
+          # Raise PiloDataIn event so that objects above us know a message has come in
+          log.debug('Raising PiloDataIn. payload=')
+          log.debug(binascii.hexlify(pipelined.payload))
+          # TODO: Need to sort out whether we need to raise on one or both
+          self.transport.raiseEvent(PiloDataIn, pipelined.payload)
+          self.raiseEvent(PiloDataIn, pipelined.payload)
+
+        if pipelined in self.rx_buffer:
+          self.rx_buffer.remove(pipelined)
 
     # If this packet does not match the sender's rx_seq
     else:
@@ -430,9 +443,6 @@ class PiloTransportConnection (EventMixin):
       log.debug(packet)
       # if it's above current rx_seq
       if packet.seq > self.rx_seq:
-        # ack the current rx_seq
-        if self.most_recent_rx:
-          self.ack(self.most_recent_rx)
         # add this packet to the rx_buffer
         already_buffered = False
         for buffered in self.rx_buffer:
@@ -442,13 +452,18 @@ class PiloTransportConnection (EventMixin):
         if not already_buffered:
           self.rx_buffer.append(packet)
 
+        # ack the current rx_seq
+        if self.most_recent_rx:
+          self.ack(self.most_recent_rx)
+
       else:
         # if it's below the current rx_seq we've already received it and we should ack this anyway
+        # TODO: this is getting called too many times - gotta figure out a way to clamp down at the very least
         # self.ack(packet)
         pass
 
   def handle_heartbeat_in (self, hrb_packet):
-    if hrb_packet.seq == (self.rx_hrb_seq + 1):
+    if hrb_packet.seq == (self.rx_hrb_seq):
       self.rx_hrb_seq += 1
       self.ack(hrb_packet, HRB=True)
 
@@ -462,20 +477,64 @@ class PiloTransportConnection (EventMixin):
     log.debug('Handling ack:')
     log.debug(ack_packet)
 
-    for sent in self.in_transit:
+    # If acked, remove from in_transit and callback
+    # if ack_packet.ack <= self.tx_seq, resend
+    # for every packet in partial_acks
+
+    acked = False
+    to_remove = []
+    for seq, sent in self.in_transit.iteritems():
       packet = sent['packet']
+      packet_acked = False
 
       if (ack_packet.seq >= packet.seq and
           ack_packet.ack >= packet.seq + 1 and
           ack_packet.HRB == packet.HRB):
 
+        packet_acked = True
+        acked = True
+
+      if ack_packet.partial_acks:
+        for p_ack in ack_packet.get_partial_acks():
+          if (ack_packet.seq >= packet.seq and
+              ack_packet.ack >= packet.seq + 1 and
+              not packet.HRB):
+
+            packet_acked = True
+
+      if packet_acked:
         log.debug('Received ACK for packet:')
-        log.debug(sent['packet'])
+        log.debug(packet)
         log.debug('\n')
 
-        self.in_transit.remove(sent)
-        if sent['callback']:
-          sent['callback'](packet)
+        to_remove.append(sent)
+
+    if to_remove:
+      self.remove_from_transit(to_remove)
+    else:
+      try:
+        self.send_packet(self.in_transit[ack_packet.ack - 1]['packet'])
+      except KeyError:
+        log.debug('Packet already removed')
+
+    if ack_packet.partial_acks:
+      for ack_hole in ack_packet.get_partial_ack_holes():
+        self.send_packet(self.in_transit[ack_hole - 1]['packet'])
+
+  def remove_from_transit (self, sent_array):
+    for sent in sent_array:
+      remove_seq = None
+      for seq, value in self.in_transit.iteritems():
+        if sent['packet'] == value['packet']:
+          packet = sent['packet']
+          remove_seq = seq
+          log.debug('calling ack callback for packet' + str(packet))
+          if sent['callback']:
+            sent['callback'](packet)
+
+      if remove_seq is not None:
+        log.debug('removing sent item with seq = ' + str(remove_seq))
+        self.in_transit.pop(remove_seq)
 
   def send (self, msg=None, callback=None, seq=None, **flags):
     packet = pkt.pilo()
@@ -508,8 +567,8 @@ class PiloTransportConnection (EventMixin):
       packet.payload = msg
 
     if packet.HRB:
-      self.tx_hrb_seq += 1
       packet.seq = self.tx_hrb_seq
+      self.tx_hrb_seq += 1
     else:
       packet.seq = self.tx_seq
       self.tx_seq += 1
@@ -521,24 +580,31 @@ class PiloTransportConnection (EventMixin):
     log.debug('send_packet')
     log.debug(packet)
 
+    already_queued = False
     # Don't queue/send identical packets
-    for transit in self.in_transit:
+    for seq, transit in self.in_transit.iteritems():
       if transit['packet'] == packet:
-        return
+        already_queued = True
 
     self.transport.send_pilo_broadcast(packet)
-    self.in_transit.append({
-      'packet':packet,
-      'callback': callback
-      })
-    self.ack_timers.append(Timer(self.config.retransmission_timeout, self.check_acked, args=[packet]))
+
+    if not already_queued:
+      index_val = packet.seq
+      if packet.HRB:
+        index_val = str(index_val) + 'HRB'
+      self.in_transit[index_val] = {
+        'packet':packet,
+        'callback': callback
+        }
+      self.ack_timers.append(Timer(self.config.retransmission_timeout, self.check_acked, args=[packet]))
+
 
   def check_acked(self, pilo_packet):
     log.debug('checking if acked:')
     log.debug(pilo_packet)
     still_in_transit = False
 
-    for sent in self.in_transit:
+    for seq, sent in self.in_transit.iteritems():
       packet = sent['packet']
       if packet == pilo_packet:
         still_in_transit = True
