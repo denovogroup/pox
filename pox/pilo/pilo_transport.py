@@ -206,7 +206,7 @@ class PiloTransport (EventMixin):
           connection.send_synack()
           return
         packet_len = len(pilo_packet.pack())
-        new_connection = PiloTransportConnection(self.config, self, pilo_packet.src_address, rx_seq=packet_len, initiating=False)
+        new_connection = PiloTransportConnection(self.config, self, pilo_packet.src_address, rx_seq=1, initiating=False)
         # Add to connections list
         self.connections.append(new_connection)
       else:
@@ -273,6 +273,8 @@ class PiloTransportConnection (EventMixin):
     self.rx_buffer = []
     self.most_recent_rx = None
     self.tx_seq = 0
+    self.tx_hrb_seq = 0
+    self.rx_hrb_seq = 0
     self.rx_seq = rx_seq
     self.acked = 0
 
@@ -318,7 +320,7 @@ class PiloTransportConnection (EventMixin):
     packet.src_address  = self.config.src_address
     packet.dst_address  = self.dst_address
     packet.seq = packet.seq
-    packet.ack = packet.seq + len(packet.pack())
+    packet.ack = packet.seq + 1
     packet.ACK = True
     packet.SYN = True
 
@@ -344,15 +346,24 @@ class PiloTransportConnection (EventMixin):
       self.transport.raiseEvent(PiloConnectionUp, self)
 
 
-  def ack (self, packet):
+  def ack (self, packet, **flags):
     log.debug('Acking packet:')
     log.debug(packet)
     ack_packet = pkt.pilo()
     ack_packet.src_address  = self.config.src_address
     ack_packet.dst_address  = self.dst_address
-    ack_packet.seq = packet.seq
-    ack_packet.ack = packet.seq + len(packet.pack())
     ack_packet.ACK = True
+
+    try:
+      if flags['HRB']:
+        ack_packet.HRB = True
+    except KeyError:
+      pass
+
+    # TODO: When we migrate all of the sequence to packet #s we'll be able to
+    # use the same as with heartbeats
+    ack_packet.seq = packet.seq
+    ack_packet.ack = packet.seq + 1
 
     self.transport.send_pilo_broadcast(ack_packet)
 
@@ -375,12 +386,16 @@ class PiloTransportConnection (EventMixin):
       self.handle_ack_in(packet)
       return
 
+    if packet.HRB:
+      self.handle_heartbeat_in(packet)
+      return
+
     # If this packet matches the connection's rx_seq
     if self.rx_seq == packet.seq:
       log.debug('Matches rx_seq')
       # reduce congestion
       # update this connections rx_seq
-      self.rx_seq += len(packet.pack())
+      self.rx_seq += 1
       # send ack for this packet
       # TODO: would be better to only send one ack for multiple packets to
       self.ack(packet)
@@ -432,6 +447,11 @@ class PiloTransportConnection (EventMixin):
         # self.ack(packet)
         pass
 
+  def handle_heartbeat_in (self, hrb_packet):
+    if hrb_packet.seq == (self.rx_hrb_seq + 1):
+      self.rx_hrb_seq += 1
+      self.ack(hrb_packet, HRB=True)
+
 
   def handle_ack_in (self, ack_packet):
 
@@ -444,8 +464,10 @@ class PiloTransportConnection (EventMixin):
 
     for sent in self.in_transit:
       packet = sent['packet']
+
       if (ack_packet.seq >= packet.seq and
-          ack_packet.ack >= packet.seq + len(packet.pack())):
+          ack_packet.ack >= packet.seq + 1 and
+          ack_packet.HRB == packet.HRB):
 
         log.debug('Received ACK for packet:')
         log.debug(sent['packet'])
@@ -455,7 +477,7 @@ class PiloTransportConnection (EventMixin):
         if sent['callback']:
           sent['callback'](packet)
 
-  def send (self, msg=None, callback=None, **flags):
+  def send (self, msg=None, callback=None, seq=None, **flags):
     packet = pkt.pilo()
     packet.src_address  = self.config.src_address
     packet.dst_address  = self.dst_address
@@ -485,8 +507,12 @@ class PiloTransportConnection (EventMixin):
     if msg:
       packet.payload = msg
 
-    packet.seq = self.tx_seq
-    self.tx_seq += len(packet.pack())
+    if packet.HRB:
+      self.tx_hrb_seq += 1
+      packet.seq = self.tx_hrb_seq
+    else:
+      packet.seq = self.tx_seq
+      self.tx_seq += 1
 
     self.send_packet(packet, callback=callback)
 

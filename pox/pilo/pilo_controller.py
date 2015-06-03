@@ -159,7 +159,7 @@ class PiloController (EventMixin):
       log.debug(packet)
 
 
-def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", heartbeat_interval="30"):
+def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", heartbeat_interval="10"):
   """
   Starts the pilo_controller component
   """
