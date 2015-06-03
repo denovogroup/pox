@@ -155,7 +155,7 @@ class pilo(packet_base):
     def set_partial_acks (self, ack_array):
         self.partial_acks = 0
         for ack in ack_array:
-            self.partial_acks = self.partial_acks | (1 << ack - self.ack)
+            self.partial_acks = self.partial_acks | (1 << (ack - self.ack))
 
     def get_partial_ack_holes (self):
         holes_array = []
