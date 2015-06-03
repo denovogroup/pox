@@ -17,23 +17,13 @@
 #
 #                           PILO Header Format
 #
-#   0                   1                   2                   3
-#   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-#  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |                  Source Hardware address                      |
-#  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |                Destination Hardware address                   |
-#  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |                        Sequence Number                        |
-#  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |                    Acknowledgment Number                      |
-#  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |A|S|F|H|                       |                               |
-#  |C|Y|I|R|                       |              TTL              |
-#  |K|N|N|B|                       |                               |
-#  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-#  |                             data                              |
-#  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+# src - 6 bytes
+# dst - 6 bytes
+# seq - 4 bytes
+# ack - 4 bytes
+# partial_acks - 4 bytes
+# flags - 2 bytes
+# ttl - 2 bytes
 #
 #======================================================================
 
@@ -58,7 +48,7 @@ ETHER_BROADCAST      = EthAddr(b"\xff\xff\xff\xff\xff\xff")
 class pilo(packet_base):
     "PILO packet struct"
 
-    MIN_LEN = 24
+    MIN_LEN = 28
 
     TTL_INIT = 12 # TODO:Probably want to better test this?
 
@@ -103,6 +93,7 @@ class pilo(packet_base):
         self.dst_address  = 0  # 32 bit
         self.seq      = 0  # 32 bit
         self.ack      = 0  # 32 bit
+        self.partial_acks  = 0  # 32 bit
         self.flags    = 0  # flags 16 bits
         self.ttl      = self.TTL_INIT  # ttl 16 bits
         self.next     = b''
@@ -119,8 +110,10 @@ class pilo(packet_base):
         if self.FIN: f += 'F'
         if self.HRB: f += 'H'
 
-        s = '[PILO %s>%s seq:%s ack:%s f:%s ttl:%s len:%s]' % (self.src_address,
-            self.dst_address, self.seq, self.ack, f, self.ttl, len(self.pack()))
+        p_ack = ', '.join(self.get_partial_acks())
+
+        s = '[PILO %s>%s seq:%s ack:%s p_ack:%s f:%s ttl:%s len:%s]' % (self.src_address,
+            self.dst_address, self.seq, self.ack, p_ack, f, self.ttl, len(self.pack()))
 
         return s
 
@@ -136,8 +129,8 @@ class pilo(packet_base):
         self.src_address  = EthAddr(raw[:6])
         self.dst_address= EthAddr(raw[6:12])
 
-        (self.seq, self.ack, self.flags, self.ttl) \
-            = struct.unpack('!IIHH', raw[12:pilo.MIN_LEN])
+        (self.seq, self.ack, self.partial_acks, self.flags, self.ttl) \
+            = struct.unpack('!IIIHH', raw[12:pilo.MIN_LEN])
 
         self.hdr_len = pilo.MIN_LEN ## TODO: should this be dynamic or will we have fixed header size?
         self.payload_len = dlen - self.hdr_len
@@ -154,10 +147,27 @@ class pilo(packet_base):
         if type(src) is EthAddr:
           src = src.toRaw()
 
-        header = struct.pack('!6s6sIIHH', src, dst,
-                 self.seq, self.ack, self.flags, self.ttl)
+        header = struct.pack('!6s6sIIIHH', src, dst,
+                 self.seq, self.ack, self.partial_acks, self.flags, self.ttl)
 
         return header
+
+    def set_partial_acks (self, ack_array):
+        self.partial_acks = 0
+        for ack in ack_array:
+            self.partial_acks = self.partial_acks | (1 << ack - self.ack)
+
+    def get_partial_acks (self):
+        ack_array = []
+        if self.partial_acks:
+            tmp_ack = self.partial_acks
+            ack_counter = 1
+            while tmp_ack > 0:
+                if tmp_ack & 1:
+                    ack_array.append(ack_counter + self.ack)
+
+                tmp_ack >>= 1
+        return ack_array
 
     # In order to compare packets, we can use:
     # http://stackoverflow.com/questions/390250/elegant-ways-to-support-equivalence-equality-in-python-classes/25176504#25176504
