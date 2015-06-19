@@ -84,6 +84,10 @@ class pilo(packet_base):
     def _setflag (self, flag, value):
       self.flags = (self.flags & ~flag) | (flag if value else 0)
 
+    @classmethod
+    def get_flag_options (cls):
+      return ['ACK', 'SYN', 'FIN', 'HRB']
+
     def __init__(self, raw=None, prev=None, **kw):
         packet_base.__init__(self)
 

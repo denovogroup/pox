@@ -366,14 +366,16 @@ class PiloTransportConnection (EventMixin):
     ack_packet.set_partial_acks(partial_acks)
     ack_packet.src_address  = self.config.src_address
     ack_packet.dst_address  = self.dst_address
+
+    # TODO: Check implementation
+    for flag in pkt.pilo.get_flag_options():
+      try:
+        if flags[flag]:
+          setattr(packet, flag, True)
+      except KeyError:
+        pass
+
     ack_packet.ACK = True
-
-    try:
-      if flags['HRB']:
-        ack_packet.HRB = True
-    except KeyError:
-      pass
-
     ack_packet.seq = packet.seq
     ack_packet.ack = packet.seq + 1
 
@@ -515,53 +517,47 @@ class PiloTransportConnection (EventMixin):
       try:
         self.send_packet(self.in_transit[ack_packet.ack - 1]['packet'])
       except KeyError:
-        log.debug('Packet already removed')
+        # Nope this would happen if you've already removed the packet that's being acked, because to_remove would be False, but the in_transit packet wouldn't be there
+        log.debug('Received ACK that suggests resending is necessary, but packet already removed from in_transit')
 
     if ack_packet.partial_acks:
       for ack_hole in ack_packet.get_partial_ack_holes():
-        self.send_packet(self.in_transit[ack_hole - 1]['packet'])
+        try:
+          self.send_packet(self.in_transit[ack_hole - 1]['packet'])
+        except KeyError:
+          # TODO: wtf - this should be for actually sending out the packet right?
+          # Nope this would happen if you've already removed the packet that's being acked, because there would be an ack hole in_transit packet would've already been removed
+          log.debug('Received ACK with partial_ack_holes that suggests resending is necessary, but packet already removed from in_transit')
+          log.debug('seq no to send should be: ' + str(ack_hole - 1))
+
 
   def remove_from_transit (self, sent_array):
     for sent in sent_array:
-      remove_seq = None
+      to_remove = []
       for seq, value in self.in_transit.iteritems():
         if sent['packet'] == value['packet']:
           packet = sent['packet']
-          remove_seq = seq
+          to_remove.append(seq)
           log.debug('calling ack callback for packet' + str(packet))
           if sent['callback']:
             sent['callback'](packet)
 
-      if remove_seq is not None:
+      for remove_seq in to_remove:
         log.debug('removing sent item with seq = ' + str(remove_seq))
-        self.in_transit.pop(remove_seq)
+        del self.in_transit[remove_seq]
 
   def send (self, msg=None, callback=None, seq=None, **flags):
     packet = pkt.pilo()
     packet.src_address  = self.config.src_address
     packet.dst_address  = self.dst_address
 
-    # TODO: there has got to be a better way to do this....
-    try:
-      if flags['ACK']:
-        packet.ACK = True
-    except KeyError:
-      pass
-    try:
-      if flags['SYN']:
-        packet.SYN = True
-    except KeyError:
-      pass
-    try:
-      if flags['FIN']:
-        packet.FIN = True
-    except KeyError:
-      pass
-    try:
-      if flags['HRB']:
-        packet.HRB = True
-    except KeyError:
-      pass
+    # TODO: Check implementation
+    for flag in pkt.pilo.get_flag_options():
+      try:
+        if flags[flag]:
+          setattr(packet, flag, True)
+      except KeyError:
+        pass
 
     if msg:
       packet.payload = msg
