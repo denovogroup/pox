@@ -26,7 +26,6 @@ from pox.lib.recoco import Timer
 from pox.lib.revent.revent import EventMixin
 from pox.lib.revent import Event
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
-from twisted.internet.protocol import DatagramProtocol
 from lib.util import get_hw_addr, get_ip_address
 import socket, struct
 import binascii

@@ -23,7 +23,6 @@ import pox.lib.packet as pkt
 from pox.pilo.pilo_transport import PiloTransport, PiloPacketIn
 from pox.lib.revent.revent import EventMixin
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
-from twisted.internet.protocol import DatagramProtocol
 from twisted.internet import reactor
 from threading import Thread
 import socket, struct
