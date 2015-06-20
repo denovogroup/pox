@@ -23,11 +23,10 @@ import pox.lib.packet as pkt
 from pox.pilo.pilo_transport import PiloTransport, PiloPacketIn
 from pox.lib.revent.revent import EventMixin
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
-from twisted.internet import reactor
 from threading import Thread
 import socket, struct
 import traceback
-from lib.util import get_hw_addr
+from pox.lib.util import get_hw_addr
 import binascii
 
 log = core.getLogger()

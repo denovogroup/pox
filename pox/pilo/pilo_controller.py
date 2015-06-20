@@ -26,7 +26,7 @@ from pox.lib.revent.revent import EventMixin
 from pox.lib.revent import EventHalt
 from pox.lib.recoco import Timer
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
-from lib.util import get_hw_addr, get_ip_address
+from pox.lib.util import get_hw_addr, get_ip_address
 import traceback
 import json
 import binascii
