@@ -26,7 +26,7 @@ from pox.lib.revent.revent import EventMixin
 from pox.lib.revent import EventHalt
 from pox.lib.recoco import Timer
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
-from lib.util import get_hw_addr, get_ip_address
+from pox.lib.util import get_hw_addr, get_ip_address
 import traceback
 import json
 import binascii
@@ -38,13 +38,16 @@ class PiloController (EventMixin):
   """
   A PiloController object will be created once at the startup of POX
   """
-  def __init__ (self, connection, client_macs):
+  def __init__ (self, connection, client_macs, **kwargs):
+
+    for name, value in kwargs.items():
+      setattr(self, name, value)
 
     self.connection = connection
     self.unacked = []
     self.controlling = []
 
-    self.transport = PiloTransport(self, UDP_IP, UDP_PORT, SRC_IP, SRC_ADDRESS, RETRANSMISSION_TIMEOUT, HEARTBEAT_INTERVAL)
+    self.transport = PiloTransport(self, self.udp_ip, self.udp_port, self.src_ip, self.src_address, self.retransmission_timeout, self.heartbeat_interval)
 
     for client_mac in client_macs:
       self.transport.initiate_connection(client_mac)
@@ -55,7 +58,7 @@ class PiloController (EventMixin):
     broadcast_msg_flow.priority = 100
     broadcast_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
     broadcast_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
-    broadcast_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
+    broadcast_msg_flow.match.nw_dst = IPAddr(self.udp_ip) # TODO: better matching for broadcast IP
     broadcast_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
 
     self.connection.send(broadcast_msg_flow)
@@ -65,7 +68,7 @@ class PiloController (EventMixin):
     normal_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
     normal_msg_flow.match.dl_src = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
     normal_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
-    normal_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
+    normal_msg_flow.match.nw_dst = IPAddr(self.udp_ip) # TODO: better matching for broadcast IP
     normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_ALL))
 
     self.connection.send(normal_msg_flow)
@@ -164,25 +167,13 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
   Starts the pilo_controller component
   """
 
-  global UDP_IP
-  global UDP_PORT
-  global THIS_IF
-  global THIS_IP
-  global controller
-  global RETRANSMISSION_TIMEOUT
-  global HEARTBEAT_INTERVAL
-  global SRC_IP
-  global SRC_ADDRESS
-
-  UDP_IP = udp_ip
-  UDP_PORT = int(udp_port)
-  THIS_IF = this_if
-  THIS_IP = get_ip_address(THIS_IF)
+  udp_port = int(udp_port)
+  this_ip = get_ip_address(this_if)
   # TODO: This SRC_IP assignment is COMPLETELY WRONG
-  SRC_IP = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-  SRC_ADDRESS = get_hw_addr(THIS_IF)
-  HEARTBEAT_INTERVAL = int(heartbeat_interval)
-  RETRANSMISSION_TIMEOUT = int(retransmission_timeout)
+  src_ip = pkt.packet_utils.mac_string_to_addr(get_hw_addr(this_if))
+  src_address = get_hw_addr(this_if)
+  heartbeat_interval = int(heartbeat_interval)
+  retransmission_timeout = int(retransmission_timeout)
 
   client_macs = client_macs.split(',')
 
@@ -192,7 +183,9 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
       return
 
     log.debug("Controlling %s" % (event.connection,))
-    PiloController(event.connection, client_macs)
+    PiloController(event.connection, client_macs, udp_ip=udp_ip, udp_port=udp_port, this_if=this_if, controller_mac=controller_mac, \
+               retransmission_timeout=retransmission_timeout, heartbeat_interval=heartbeat_interval, src_ip=src_ip)
+
     return EventHalt
 
   core.openflow.addListenerByName("ConnectionUp", start_switch, priority=9) # Arbitrary priority needs to be >0

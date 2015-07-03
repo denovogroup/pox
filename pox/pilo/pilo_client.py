@@ -23,12 +23,10 @@ import pox.lib.packet as pkt
 from pox.pilo.pilo_transport import PiloTransport, PiloPacketIn
 from pox.lib.revent.revent import EventMixin
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
-from twisted.internet.protocol import DatagramProtocol
-from twisted.internet import reactor
 from threading import Thread
 import socket, struct
 import traceback
-from lib.util import get_hw_addr
+from pox.lib.util import get_hw_addr
 import binascii
 
 log = core.getLogger()
@@ -40,11 +38,14 @@ class PiloClient (EventMixin):
   A Pilo object is created for each switch that connects.
   A Connection object for that switch is passed to the __init__ function.
   """
-  def __init__ (self, connection):
+  def __init__ (self, connection, **kwargs):
 
     self.connection = connection
 
-    self.transport = PiloTransport(self, UDP_IP, UDP_PORT, SRC_IP, SRC_ADDRESS, RETRANSMISSION_TIMEOUT, HEARTBEAT_INTERVAL)
+    for name, value in kwargs.items():
+      setattr(self, name, value)
+
+    self.transport = PiloTransport(self, self.udp_ip, self.udp_port, self.src_ip, self.src_address, self.retransmission_timeout, self.heartbeat_interval)
 
     # Creates an open flow rule which should send PILO broadcast messages
     # to our handler
@@ -52,7 +53,7 @@ class PiloClient (EventMixin):
     broadcast_msg_flow.priority = 100
     broadcast_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
     broadcast_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
-    broadcast_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
+    broadcast_msg_flow.match.nw_dst = IPAddr(self.udp_ip) # TODO: better matching for broadcast IP
     broadcast_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
 
     self.connection.send(broadcast_msg_flow)
@@ -60,10 +61,10 @@ class PiloClient (EventMixin):
     normal_msg_flow = of.ofp_flow_mod()
     normal_msg_flow.priority = 101
     normal_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
-    normal_msg_flow.match.dl_src = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+    normal_msg_flow.match.dl_src = pkt.packet_utils.mac_string_to_addr(get_hw_addr(self.this_if))
     normal_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
-    normal_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
-    normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_ALL)) ##TODO: What OFPP_ command should this be?? it should match on pilo_controller I think..
+    normal_msg_flow.match.nw_dst = IPAddr(self.udp_ip) # TODO: better matching for broadcast IP
+    normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_ALL))
 
     self.connection.send(normal_msg_flow)
 
@@ -98,7 +99,7 @@ class PiloClient (EventMixin):
       # We have a new controller and want to tell the previous controller know the connection is over
       self.transport.terminate_connection(self.controller_address)
 
-    if not self.has_controller or not pkt.packet_utils.same_mac(self.controller_address, SRC_ADDRESS):
+    if not self.has_controller or not pkt.packet_utils.same_mac(self.controller_address, self.src_address):
       self.controller_address = controller_address
       self.has_controller = True
       log.debug('We have a PILO controller with address:')
@@ -220,7 +221,7 @@ class PiloClient (EventMixin):
 
     eth = packet.find('ethernet')
 
-    if pkt.packet_utils.same_mac(eth.src, SRC_ADDRESS):
+    if pkt.packet_utils.same_mac(eth.src, self.src_address):
       log.debug('This is a packet from this switch!')
       return
 
@@ -264,29 +265,19 @@ def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5
   Starts the component
   """
 
-  global UDP_IP
-  global THIS_IF
-  global UDP_PORT
-  global CONTROLLER_MAC
-  global SRC_ADDRESS
-  global RETRANSMISSION_TIMEOUT
-  global HEARTBEAT_INTERVAL
-  global SRC_IP
-
-  UDP_IP = udp_ip
-  THIS_IF = this_if
-  UDP_PORT = int(udp_port)
-  CONTROLLER_MAC = controller_mac
+  udp_port = int(udp_port)
+  controller_mac = controller_mac
   # TODO: This SRC_IP assignment is COMPLETELY WRONG
-  SRC_IP = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
-  SRC_ADDRESS = get_hw_addr(THIS_IF)
-  HEARTBEAT_INTERVAL = int(heartbeat_interval)
-  RETRANSMISSION_TIMEOUT = int(retransmission_timeout)
+  src_ip = pkt.packet_utils.mac_string_to_addr(get_hw_addr(this_if))
+  src_address = get_hw_addr(this_if)
+  heartbeat_interval = int(heartbeat_interval)
+  retransmission_timeout = int(retransmission_timeout)
 
   def start_switch (event):
 
     log.debug("Controlling %s" % (event.connection,))
-    PiloClient(event.connection)
+    PiloClient(event.connection, udp_ip=udp_ip, udp_port=udp_port, this_if=this_if, controller_mac=controller_mac, \
+               retransmission_timeout=retransmission_timeout, heartbeat_interval=heartbeat_interval, src_ip=src_ip)
 
   core.openflow.addListenerByName("ConnectionUp", start_switch)
 
