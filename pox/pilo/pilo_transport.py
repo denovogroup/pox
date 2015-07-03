@@ -165,6 +165,7 @@ class PiloTransport (EventMixin):
         log.debug('Can\'t send ovs message')
 
     else:
+      log.debug('using regular socket to send broadcast')
       sock = socket.socket(socket.AF_INET, # IP
           socket.SOCK_DGRAM) # UDP
       sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -339,7 +340,9 @@ class PiloTransportConnection (EventMixin):
     """
     For when we've gotten an ACK for our SYNACK
     """
-    self.ack(packet)
+    # TODO: we want to ack the packet we received, not the packet we sent, but the callback packet is the packet we sent
+    # For now we're just handling this in the handle_ack_in call
+    # self.ack(packet)
     if not self.connected:
       self.connected = True
       self.transport.raiseEvent(PiloConnectionUp, self)
@@ -348,11 +351,12 @@ class PiloTransportConnection (EventMixin):
     """
     For when we've gotten a SYNACK for our SYN
     """
-    self.ack(packet)
+    # TODO: we want to ack the packet we received, not the packet we sent, but the callback packet is the packet we sent
+    # For now we're just handling this in the handle_ack_in call
+    # self.ack(packet)
     if not self.connected:
       self.connected = True
       self.transport.raiseEvent(PiloConnectionUp, self)
-
 
   def ack (self, packet, **flags):
     log.debug('Acking packet:')
@@ -371,7 +375,7 @@ class PiloTransportConnection (EventMixin):
     for flag in pkt.pilo.get_flag_options():
       try:
         if flags[flag]:
-          setattr(packet, flag, True)
+          setattr(ack_packet, flag, True)
       except KeyError:
         pass
 
@@ -466,6 +470,8 @@ class PiloTransportConnection (EventMixin):
 
   def handle_heartbeat_in (self, hrb_packet):
     if hrb_packet.seq == (self.rx_hrb_seq):
+      log.debug('Received HRB:')
+      log.debug(hrb_packet)
       self.rx_hrb_seq += 1
       self.ack(hrb_packet, HRB=True)
 
@@ -498,8 +504,7 @@ class PiloTransportConnection (EventMixin):
 
       if ack_packet.partial_acks:
         for p_ack in ack_packet.get_partial_acks():
-          if (ack_packet.seq >= packet.seq and
-              ack_packet.ack >= packet.seq + 1 and
+          if (p_ack == packet.seq + 1 and
               not packet.HRB):
 
             packet_acked = True
@@ -508,6 +513,12 @@ class PiloTransportConnection (EventMixin):
         log.debug('Received ACK for packet:')
         log.debug(packet)
         log.debug('\n')
+
+        # We have to ack SYNACK packets and this is where they would end up
+        # I'm not sure this is my favorite place to do this, but it's the last place that
+        # we have access to the ack_packet
+        if ack_packet.SYN:
+          self.ack(ack_packet)
 
         to_remove.append(sent)
 

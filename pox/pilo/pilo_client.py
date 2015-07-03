@@ -63,7 +63,7 @@ class PiloClient (EventMixin):
     normal_msg_flow.match.dl_src = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
     normal_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
     normal_msg_flow.match.nw_dst = IPAddr(UDP_IP) # TODO: better matching for broadcast IP
-    normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_ALL))
+    normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_ALL)) ##TODO: What OFPP_ command should this be?? it should match on pilo_controller I think..
 
     self.connection.send(normal_msg_flow)
 
@@ -259,7 +259,7 @@ class PiloClient (EventMixin):
         log.debug(traceback.format_exc())
         log.debug(e)
 
-def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5", heartbeat_interval="10"):
+def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5", heartbeat_interval="40"):
   """
   Starts the component
   """
