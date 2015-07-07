@@ -45,7 +45,7 @@ class PiloClient (EventMixin):
     for name, value in kwargs.items():
       setattr(self, name, value)
 
-    self.transport = PiloTransport(self, self.udp_ip, self.udp_port, self.src_ip, self.src_address, self.retransmission_timeout, self.heartbeat_interval)
+    self.transport = PiloTransport(self, self.udp_ip, self.udp_port, self.src_address, self.retransmission_timeout, self.heartbeat_interval)
 
     # Creates an open flow rule which should send PILO broadcast messages
     # to our handler
@@ -267,9 +267,7 @@ def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5
 
   udp_port = int(udp_port)
   controller_mac = controller_mac
-  # TODO: This SRC_IP assignment is COMPLETELY WRONG
-  src_ip = pkt.packet_utils.mac_string_to_addr(get_hw_addr(this_if))
-  src_address = get_hw_addr(this_if)
+  src_address = pkt.packet_utils.mac_string_to_addr(get_hw_addr(this_if))
   heartbeat_interval = int(heartbeat_interval)
   retransmission_timeout = int(retransmission_timeout)
 
@@ -277,7 +275,7 @@ def launch (udp_ip, this_if, udp_port, controller_mac, retransmission_timeout="5
 
     log.debug("Controlling %s" % (event.connection,))
     PiloClient(event.connection, udp_ip=udp_ip, udp_port=udp_port, this_if=this_if, controller_mac=controller_mac, \
-               retransmission_timeout=retransmission_timeout, heartbeat_interval=heartbeat_interval, src_ip=src_ip)
+               retransmission_timeout=retransmission_timeout, heartbeat_interval=heartbeat_interval, src_address=src_address)
 
   core.openflow.addListenerByName("ConnectionUp", start_switch)
 

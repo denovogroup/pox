@@ -47,7 +47,7 @@ class PiloController (EventMixin):
     self.unacked = []
     self.controlling = []
 
-    self.transport = PiloTransport(self, self.udp_ip, self.udp_port, self.src_ip, self.src_address, self.retransmission_timeout, self.heartbeat_interval)
+    self.transport = PiloTransport(self, self.udp_ip, self.udp_port, self.src_address, self.retransmission_timeout, self.heartbeat_interval)
 
     for client_mac in client_macs:
       self.transport.initiate_connection(client_mac)
@@ -66,7 +66,7 @@ class PiloController (EventMixin):
     normal_msg_flow = of.ofp_flow_mod()
     normal_msg_flow.priority = 101
     normal_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
-    normal_msg_flow.match.dl_src = pkt.packet_utils.mac_string_to_addr(get_hw_addr(THIS_IF))
+    normal_msg_flow.match.dl_src = pkt.packet_utils.mac_string_to_addr(get_hw_addr(self.this_if))
     normal_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
     normal_msg_flow.match.nw_dst = IPAddr(self.udp_ip) # TODO: better matching for broadcast IP
     normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_ALL))
@@ -136,7 +136,7 @@ class PiloController (EventMixin):
     log.debug(packet)
 
     eth = packet.find('ethernet')
-    local_mac = EthAddr(get_hw_addr(THIS_IF))
+    local_mac = EthAddr(get_hw_addr(self.this_if))
 
     if pkt.packet_utils.same_mac(eth.src, local_mac):
       log.debug('This is a packet from this switch!')
@@ -169,9 +169,7 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
 
   udp_port = int(udp_port)
   this_ip = get_ip_address(this_if)
-  # TODO: This SRC_IP assignment is COMPLETELY WRONG
-  src_ip = pkt.packet_utils.mac_string_to_addr(get_hw_addr(this_if))
-  src_address = get_hw_addr(this_if)
+  src_address = pkt.packet_utils.mac_string_to_addr(get_hw_addr(this_if))
   heartbeat_interval = int(heartbeat_interval)
   retransmission_timeout = int(retransmission_timeout)
 
@@ -183,8 +181,8 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
       return
 
     log.debug("Controlling %s" % (event.connection,))
-    PiloController(event.connection, client_macs, udp_ip=udp_ip, udp_port=udp_port, this_if=this_if, controller_mac=controller_mac, \
-               retransmission_timeout=retransmission_timeout, heartbeat_interval=heartbeat_interval, src_ip=src_ip)
+    PiloController(event.connection, client_macs, udp_ip=udp_ip, udp_port=udp_port, this_if=this_if, \
+               retransmission_timeout=retransmission_timeout, heartbeat_interval=heartbeat_interval, src_address=src_address)
 
     return EventHalt
 

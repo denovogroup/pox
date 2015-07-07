@@ -74,25 +74,23 @@ class PiloPacketIn (Event):
 
 
 class PiloTransportConfig (object):
-  def __init__ (self, pilo_source_obj, udp_ip, udp_port, src_ip, src_address, retransmission_timeout, heartbeat_interval):
+  def __init__ (self, pilo_source_obj, udp_ip, udp_port, src_address, retransmission_timeout, heartbeat_interval):
     self.pilo_source_obj = pilo_source_obj
     self.udp_ip = udp_ip
     self.udp_port = udp_port
-    self.src_ip = src_ip
     self.src_address = EthAddr(src_address)
     self.retransmission_timeout = retransmission_timeout
     self.heartbeat_interval = heartbeat_interval
 
   def __str__ (self):
-    string = """PiloTransportConfig: src_address={src_address}
+    string = """PiloTransportConfig:
                 udp_port={udp_port}
-                src_ip={src_ip}
+                src_address={src_address}
                 udp_ip={udp_ip}
                 heartbeat_interval={heartbeat_interval}
                 retransmission_timeout={retransmission_timeout}
              """.format(src_address=self.src_address,
                         udp_port=self.udp_port,
-                        src_ip=self.src_ip,
                         udp_ip=self.udp_ip,
                         heartbeat_interval=self.heartbeat_interval,
                         retransmission_timeout=self.retransmission_timeout)
@@ -104,19 +102,18 @@ class PiloTransportConfig (object):
 class PiloTransport (EventMixin):
   _eventMixin_events = set([PiloConnectionUp, PiloConnectionDown, PiloDataIn])
 
-  def __init__ (self, pilo_source_obj, udp_ip, udp_port, src_ip, src_address, retransmission_timeout, heartbeat_interval):
-    self.config = PiloTransportConfig(pilo_source_obj, udp_ip, udp_port, src_ip, src_address, retransmission_timeout, heartbeat_interval)
+  def __init__ (self, pilo_source_obj, udp_ip, udp_port, src_address, retransmission_timeout, heartbeat_interval):
+    self.config = PiloTransportConfig(pilo_source_obj, udp_ip, udp_port, src_address, retransmission_timeout, heartbeat_interval)
     pilo_source_obj.addListeners(self)
     self.connections = []
     self.addListeners(self)
 
   def __str__ (self):
-    string = """PiloTransport: src_address={src_address}
-                src_ip={src_ip}
+    string = """PiloTransport:
+                src_address={src_address}
                 udp_ip={udp_ip}
                 retransmission_timeout={retransmission_timeout}
              """.format(src_address=self.config.src_address,
-                        src_ip=self.config.src_ip,
                         udp_ip=self.config.udp_ip,
                         retransmission_timeout=self.config.retransmission_timeout)
 
