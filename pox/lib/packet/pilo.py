@@ -117,7 +117,7 @@ class pilo(packet_base):
         p_ack = ', '.join(str(ack) for ack in self.get_partial_acks())
 
         s = '[PILO %s>%s seq:%s ack:%s p_ack:%s f:%s ttl:%s len:%s]' % (self.src_address,
-            self.dst_address, self.seq, self.ack, p_ack, f, self.ttl, len(self.pack()))
+              self.dst_address, self.seq, self.ack, p_ack, f, self.ttl, len(self.pack()))
 
         return s
 
@@ -159,7 +159,8 @@ class pilo(packet_base):
     def set_partial_acks (self, ack_array):
         self.partial_acks = 0
         for ack in ack_array:
-            self.partial_acks = self.partial_acks | (1 << (ack - self.ack))
+          assert ack > self.ack
+          self.partial_acks = self.partial_acks | (1 << (ack - 1 - self.ack))
 
     def get_partial_ack_holes (self):
         holes_array = []
@@ -167,10 +168,11 @@ class pilo(packet_base):
             tmp_ack = self.partial_acks
             ack_counter = 1
             while tmp_ack > 0:
-                if tmp_ack ^ 1:
+                if tmp_ack & 1 != 1:
                     holes_array.append(ack_counter + self.ack)
 
                 tmp_ack >>= 1
+                ack_counter += 1
         return holes_array
 
     def get_partial_acks (self):
@@ -179,10 +181,11 @@ class pilo(packet_base):
             tmp_ack = self.partial_acks
             ack_counter = 1
             while tmp_ack > 0:
-                if tmp_ack & 1:
+                if tmp_ack & 1 == 1:
                     ack_array.append(ack_counter + self.ack)
 
                 tmp_ack >>= 1
+                ack_counter += 1
         return ack_array
 
     # In order to compare packets, we can use:
