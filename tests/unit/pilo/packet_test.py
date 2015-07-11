@@ -36,7 +36,7 @@ class PiloPacketTest(unittest.TestCase):
     pass
 
 
-  def test_partial_acks(self):
+  def test_partial_acks_basic(self):
     pkt = pilo_packet()
     pkt.seq = 2
     pkt.ack = 3
@@ -50,6 +50,56 @@ class PiloPacketTest(unittest.TestCase):
     holes = pkt.get_partial_ack_holes()
     self.assertEqual(holes, [4, 6, 7, 8])
 
+  def test_partial_acks_empty(self):
+    pkt = pilo_packet()
+    pkt.seq = 0
+    pkt.ack = 1
+
+    pkt.set_partial_acks([])
+    self.assertEqual(pkt.partial_acks, 0)
+
+    get_acks = pkt.get_partial_acks()
+    self.assertEqual(get_acks, [])
+
+    holes = pkt.get_partial_ack_holes()
+    self.assertEqual(holes, [])
+
+  def test_partial_acks_lower(self):
+    pkt = pilo_packet()
+    pkt.seq = 10
+    pkt.ack = 11
+
+    pkt.set_partial_acks([1, 2])
+    self.assertEqual(pkt.partial_acks, 0)
+
+    get_acks = pkt.get_partial_acks()
+    self.assertEqual(get_acks, [])
+
+    holes = pkt.get_partial_ack_holes()
+    self.assertEqual(holes, [])
+
+  def test_partial_acks_range(self):
+    pkt = pilo_packet()
+    pkt.seq = 1
+    pkt.ack = 2
+
+    pkt.set_partial_acks([20])
+    self.assertEqual(pkt.partial_acks, 0)
+
+    pkt.set_partial_acks([9])
+    self.assertEqual(pkt.partial_acks, 64)
+
+    pkt.set_partial_acks([10])
+    self.assertEqual(pkt.partial_acks, 0)
+
+    pkt.set_partial_acks([7, 9])
+    self.assertEqual(pkt.partial_acks, 80)
+
+    get_acks = pkt.get_partial_acks()
+    self.assertEqual(get_acks, [7, 9])
+
+    holes = pkt.get_partial_ack_holes()
+    self.assertEqual(holes, [3, 4, 5, 6, 8])
 
 if __name__ == '__main__':
   unittest.main()

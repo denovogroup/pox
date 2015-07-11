@@ -157,10 +157,19 @@ class pilo(packet_base):
         return header
 
     def set_partial_acks (self, ack_array):
+
+        max_size = 8
         self.partial_acks = 0
+
         for ack in ack_array:
-          assert ack > self.ack
-          self.partial_acks = self.partial_acks | (1 << (ack - 1 - self.ack))
+          if ack > self.ack and ack - self.ack < max_size:
+            self.partial_acks = self.partial_acks | (1 << (ack - 1 - self.ack))
+          else:
+            log.warn(ack);
+            log.warn(ack_array);
+            log.warn('partial ack is invalid');
+
+
 
     def get_partial_ack_holes (self):
         holes_array = []
@@ -188,22 +197,12 @@ class pilo(packet_base):
                 ack_counter += 1
         return ack_array
 
-    # In order to compare packets, we can use:
-    # http://stackoverflow.com/questions/390250/elegant-ways-to-support-equivalence-equality-in-python-classes/25176504#25176504
-    # Likely this should actually be implemented for all POX packets
-    # but I'm going to pass on that now - maxb
-    def __eq__(self, other):
-        """Override the default Equals behavior"""
-        if isinstance(other, self.__class__):
-            return self.__dict__ == other.__dict__
-        return NotImplemented
+    def equals (self, other, match_ttl=False):
+      return (self.src_address == other.src_address and
+              self.dst_address == other.dst_address and
+              self.seq == other.seq and
+              self.ack == other.ack and
+              self.flags == other.flags and
+              self.raw == other.raw and
+              ( self.ttl == other.ttl or match_ttl))
 
-    def __ne__(self, other):
-        """Define a non-equality test"""
-        if isinstance(other, self.__class__):
-            return not self.__eq__(other)
-        return NotImplemented
-
-    def __hash__(self):
-        """Override the default hash behavior (that returns the id or the object)"""
-        return hash(tuple(sorted(self.__dict__.items())))
