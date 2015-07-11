@@ -19,11 +19,12 @@ This component will implement the PILO (physically in band logically out of band
 
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
+from pox.openflow.of_01 import ConnectionDown
 import pox.lib.packet as pkt
 from pox.pilo.pilo_transport import PiloTransport, PiloPacketIn
 from pox.pilo.pilo_connection import PiloConnection
 from pox.lib.revent.revent import EventMixin
-from pox.lib.revent import EventHalt
+from pox.lib.revent import Event, EventHalt
 from pox.lib.recoco import Timer
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from pox.lib.util import get_hw_addr, get_ip_address
@@ -34,7 +35,7 @@ import binascii
 log = core.getLogger()
 
 class PiloController (EventMixin):
-  _eventMixin_events = set([PiloPacketIn])
+  _eventMixin_events = set([PiloPacketIn, ConnectionDown])
   """
   A PiloController object will be created once at the startup of POX
   """
@@ -91,6 +92,11 @@ class PiloController (EventMixin):
         log.debug('No longer controlling: ' + str(controlled))
         self.controlling.remove(controlled)
 
+    if self.retry_on_disconnect:
+      log.debug('Attempting to re-initiate connection with Timer.')
+      Timer(1, self.transport.initiate_connection, args=[address])
+
+
   def _handle_ConnectionDown (self, event):
     """
     This was happening when we were getting socket errors attempting to
@@ -100,9 +106,11 @@ class PiloController (EventMixin):
     for controlled in self.controlling:
       self.transport.terminate_connection(controlled['mac'])
 
+
   def _handle_PiloConnectionDown (self, event):
     client_address = event.dst_address
     self.remove_client(client_address)
+
 
   def _handle_PiloConnectionUp (self, event):
     log.debug('_handle_PiloConnectionUp: ' + str(event.dst_address))
@@ -115,13 +123,11 @@ class PiloController (EventMixin):
     if not already_controlling:
       # This means that we've established a connection with the client
       log.debug('Controlling: ' + str(client_address))
-      newcon = PiloConnection(self.connection.sock, event.connection)
       self.controlling.append({
-            'mac': EthAddr(client_address)
+            'mac': EthAddr(client_address),
+            'connection': PiloConnection(self.connection.sock, event.connection)
           })
 
-      self.pilo_connection = event.connection
-      self.pilo_connection.addListeners(self)
 
   def _handle_PacketIn (self, event):
     """
@@ -162,7 +168,7 @@ class PiloController (EventMixin):
       log.debug(packet)
 
 
-def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", heartbeat_interval="30"):
+def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", heartbeat_interval="30", retry_on_disconnect=True):
   """
   Starts the pilo_controller component
   """
@@ -171,6 +177,7 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
   this_ip = get_ip_address(this_if)
   src_address = pkt.packet_utils.mac_string_to_addr(get_hw_addr(this_if))
   heartbeat_interval = int(heartbeat_interval)
+  retry_on_disconnect = bool(retry_on_disconnect)
   retransmission_timeout = int(retransmission_timeout)
 
   client_macs = client_macs.split(',')
@@ -182,7 +189,7 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
 
     log.debug("Controlling %s" % (event.connection,))
     PiloController(event.connection, client_macs, udp_ip=udp_ip, udp_port=udp_port, this_if=this_if, \
-               retransmission_timeout=retransmission_timeout, heartbeat_interval=heartbeat_interval, src_address=src_address)
+               retransmission_timeout=retransmission_timeout, heartbeat_interval=heartbeat_interval, src_address=src_address, retry_on_disconnect=retry_on_disconnect)
 
     return EventHalt
 

@@ -106,9 +106,9 @@ class PiloClient (EventMixin):
       log.debug(self.controller_address)
 
       self.pilo_connection = event.connection
-      self.pilo_connection.addListeners(self)
 
   def _handle_PiloConnectionDown (self, event):
+    # TODO: this isn\'t right
     controller_address = event.dst_address
     self.remove_controller(controller_address)
 

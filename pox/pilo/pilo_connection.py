@@ -113,14 +113,29 @@ class PiloConnection (Connection):
   with an openflow switch
   """
 
-  def __init__ (self, sock, pilo_connection):
+  def __init__ (self, sock, pilo_transport_connection):
 
-    self.pilo_connection = pilo_connection
-    self.dpid = EthAddr(pilo_connection.dst_address)
-    self.pilo_connection = pilo_connection
-    self.pilo_connection.addListenerByName('PiloDataIn', self.receive)
+    self.pilo_transport_connection = pilo_transport_connection
+    self.dpid = EthAddr(pilo_transport_connection.dst_address)
+    self.pilo_transport_connection = pilo_transport_connection
+    self.pilo_transport_connection.addListenerByName('PiloDataIn', self.receive)
+    self.pilo_transport_connection.addListenerByName('PiloConnectionDown', self._handle_PiloConnectionDown)
 
     super(PiloConnection, self).__init__(sock, send_hello=False)
+
+  def _handle_PiloConnectionDown (self, event):
+    client_address = event.dst_address
+    log.debug('self.disconnection_raised = ')
+    log.debug(self.disconnection_raised)
+    if not self.disconnection_raised:
+      log.debug('not disconnection_raised')
+      self.disconnection_raised = True
+      self.ofnexus.raiseEventNoErrors(ConnectionDown, self)
+      self.raiseEventNoErrors(ConnectionDown, self)
+
+    self.disconnected = True
+    log.debug('ran connection down code')
+
 
   def close (self):
     self.disconnect('closed')
@@ -142,7 +157,7 @@ class PiloConnection (Connection):
           self.raiseEventNoErrors(ConnectionDown, self)
       self.disconnected = True
 
-    self.pilo_connection.close(callback=disconnect_callback)
+    self.pilo_transport_connection.close(callback=disconnect_callback)
 
   def send (self, data):
     """
@@ -163,7 +178,7 @@ class PiloConnection (Connection):
     log.debug('sending to switch from piloconnection')
     log.debug('msg=')
     log.debug(binascii.hexlify(data))
-    self.pilo_connection.send(msg=data)
+    self.pilo_transport_connection.send(msg=data)
 
   def receive (self, event):
     """
@@ -171,7 +186,6 @@ class PiloConnection (Connection):
     It should contain the payload of a PILO packet which *should* be an OF message
     It doesn't currently implement any sort of buffering, so it will receive single
     PILO payloads and send them to any handlers as such
-    TODO: maxb - this is a little too copy+pasted frome of connection. Need to go back through.
     """
 
     msg = event.msg
@@ -195,7 +209,7 @@ class PiloConnection (Connection):
     new_offset,msg = unpackers[ofp_type](msg, offset)
     assert new_offset - offset == msg_length
 
-    log.debug('Receiving in pilo_connection:')
+    log.debug('Receiving in pilo_transport_connection:')
     log.debug(msg)
 
     try:
