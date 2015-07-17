@@ -82,8 +82,10 @@ class PiloController (EventMixin):
 
     self.connection.send(table_miss_msg_flow)
 
-    connection.addListeners(self)
+    connection.addListeners(self, priority=99)
     self.transport.addListeners(self)
+    core.addListeners(self, priority=99)
+    core.openflow.addListeners(self, priority=99)
 
   # TODO: Need to raise ConnectionDown event here
   def remove_client(self, address):
@@ -105,6 +107,8 @@ class PiloController (EventMixin):
     """
     for controlled in self.controlling:
       self.transport.terminate_connection(controlled['mac'])
+
+    return EventHalt
 
 
   def _handle_PiloConnectionDown (self, event):
@@ -133,6 +137,11 @@ class PiloController (EventMixin):
     """
     Handles packet in messages from the switch.
     """
+    connection = event.connection
+    if isinstance(connection, PiloConnection):
+      log.debug('this is a piloConnection, so we\'ll return and let other listeners handle it')
+      return
+
     packet = event.parsed # This is the parsed packet data.
     if not packet.parsed:
       log.warning("Ignoring incomplete packet")
@@ -146,13 +155,13 @@ class PiloController (EventMixin):
 
     if pkt.packet_utils.same_mac(eth.src, local_mac):
       log.debug('This is a packet from this switch!')
-      return
+      return EventHalt
 
-    # Ignore ARP requests because the arp-responder module is doing this
-    a = packet.find('arp')
-    if a:
-      log.debug('This is an ARP request, so pilo_controller is gonna ignore it')
-      return
+    # # Ignore ARP requests because the arp-responder module is doing this
+    # a = packet.find('arp')
+    # if a:
+    #   log.debug('This is an ARP request, so pilo_controller is gonna ignore it')
+    #   return
 
     try:
       udp = packet.find('udp')
@@ -167,6 +176,9 @@ class PiloController (EventMixin):
       log.debug('Can\'t parse as PILO:')
       log.debug(packet)
 
+
+    log.debug('cancelling packet handle')
+    return EventHalt
 
 def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", heartbeat_interval="30", retry_on_disconnect=True):
   """
@@ -191,7 +203,7 @@ def launch (udp_ip, udp_port, this_if, client_macs, retransmission_timeout="5", 
     PiloController(event.connection, client_macs, udp_ip=udp_ip, udp_port=udp_port, this_if=this_if, \
                retransmission_timeout=retransmission_timeout, heartbeat_interval=heartbeat_interval, src_address=src_address, retry_on_disconnect=retry_on_disconnect)
 
-    return EventHalt
-
   core.openflow.addListenerByName("ConnectionUp", start_switch, priority=9) # Arbitrary priority needs to be >0
 
+  from pox.forwarding.l3_learning import launch
+  launch(fakeways='10.1.100.1, 10.1.100.2, 10.1.100.3')

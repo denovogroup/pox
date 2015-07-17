@@ -20,13 +20,16 @@ This component will implement the PILO (physically in band logically out of band
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
+from pox.lib.packet.arp import arp
+from pox.lib.packet.arp import ethernet
+from pox.lib.packet.arp import ipv4
 from pox.pilo.pilo_transport import PiloTransport, PiloPacketIn
 from pox.lib.revent.revent import EventMixin
 from pox.lib.addresses import IPAddr, IPAddr6, EthAddr
 from threading import Thread
 import socket, struct
 import traceback
-from pox.lib.util import get_hw_addr
+from pox.lib.util import get_hw_addr, get_ip_address
 import binascii
 
 log = core.getLogger()
@@ -51,8 +54,8 @@ class PiloClient (EventMixin):
     # to our handler
     broadcast_msg_flow = of.ofp_flow_mod()
     broadcast_msg_flow.priority = 100
-    broadcast_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
-    broadcast_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
+    broadcast_msg_flow.match.dl_type = ethernet.IP_TYPE
+    broadcast_msg_flow.match.nw_proto = ipv4.UDP_PROTOCOL
     broadcast_msg_flow.match.nw_dst = IPAddr(self.udp_ip) # TODO: better matching for broadcast IP
     broadcast_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
 
@@ -60,9 +63,9 @@ class PiloClient (EventMixin):
 
     normal_msg_flow = of.ofp_flow_mod()
     normal_msg_flow.priority = 101
-    normal_msg_flow.match.dl_type = pkt.ethernet.IP_TYPE
+    normal_msg_flow.match.dl_type = ethernet.IP_TYPE
     normal_msg_flow.match.dl_src = pkt.packet_utils.mac_string_to_addr(get_hw_addr(self.this_if))
-    normal_msg_flow.match.nw_proto = pkt.ipv4.UDP_PROTOCOL
+    normal_msg_flow.match.nw_proto = ipv4.UDP_PROTOCOL
     normal_msg_flow.match.nw_dst = IPAddr(self.udp_ip) # TODO: better matching for broadcast IP
     normal_msg_flow.actions.append(of.ofp_action_output(port = of.OFPP_ALL))
 
@@ -223,13 +226,8 @@ class PiloClient (EventMixin):
 
     if pkt.packet_utils.same_mac(eth.src, self.src_address):
       log.debug('This is a packet from this switch!')
-      return
-
-    # Ignore ARP requests because the arp-responder module is doing this
-    a = packet.find('arp')
-    if a:
-      log.debug('This is an ARP request, so pilo_client is gonna ignore it')
-      return
+      # I think we still want to try to figure out what to do with this
+      # return
 
     try:
       udp = packet.find('udp')

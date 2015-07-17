@@ -401,10 +401,10 @@ class PiloTransportConnection (EventMixin):
 
     self.send(callback=_finack_callback, FIN=True, ACK=True)
 
+  # Handle everything other than SYN only packet
   def handle_packet_in (self, packet):
     log.debug('handle_packet_in')
     log.debug(packet)
-    # Handle everything other than SYN only packet
     if packet.ACK:
       self.handle_ack_in(packet)
       return
@@ -416,6 +416,8 @@ class PiloTransportConnection (EventMixin):
     if packet.HRB:
       self.handle_heartbeat_in(packet)
       return
+
+    rx_pipeline = []
 
     # If this packet matches the connection's rx_seq
     if self.rx_seq == packet.seq:
@@ -430,17 +432,18 @@ class PiloTransportConnection (EventMixin):
           last_packet = buffered
           self.rx_seq += 1
 
+      self.ack(last_packet)
+      self.most_recent_rx = last_packet
+
       rx_pipeline.sort(key=lambda x: x.seq)
       for pipelined in rx_pipeline:
+        if pipelined in self.rx_buffer:
+          self.rx_buffer.remove(pipelined)
+
         # Raise PiloDataIn event so that objects above us know a message has come in
         self.transport.raiseEvent(PiloDataIn, pipelined.payload)
         self.raiseEvent(PiloDataIn, pipelined.payload)
 
-        if pipelined in self.rx_buffer:
-          self.rx_buffer.remove(pipelined)
-
-      self.ack(last_packet)
-      self.most_recent_rx = last_packet
 
     # If this packet does not match the sender's rx_seq
     else:
@@ -493,7 +496,7 @@ class PiloTransportConnection (EventMixin):
     # for every packet in partial_acks
 
     to_remove = []
-    for seq, sent in self.in_transit.iteritems():
+    for seq, sent in self.in_transit.items():
       packet = sent['packet']
       packet_acked = False
 
@@ -547,7 +550,7 @@ class PiloTransportConnection (EventMixin):
   def remove_from_transit (self, sent_array):
     for sent in sent_array:
       to_remove = []
-      for seq, value in self.in_transit.iteritems():
+      for seq, value in self.in_transit.items():
         if sent['packet'] == value['packet']:
           packet = sent['packet']
           to_remove.append(seq)
@@ -593,7 +596,7 @@ class PiloTransportConnection (EventMixin):
 
     already_queued = False
     # Don't queue/send identical packets
-    for seq, transit in self.in_transit.iteritems():
+    for seq, transit in self.in_transit.items():
       if transit['packet'].equals(packet):
         already_queued = True
 
@@ -619,7 +622,7 @@ class PiloTransportConnection (EventMixin):
       log.debug(pilo_packet)
       still_in_transit = False
 
-      for seq, sent in self.in_transit.iteritems():
+      for seq, sent in self.in_transit.items():
         packet = sent['packet']
         if packet == pilo_packet:
           still_in_transit = True
